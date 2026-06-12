@@ -29,5 +29,14 @@ export const actions = {
 				route: route.id
 			}
 		};
+	},
+	async shape({ request }) {
+		const form = await request.formData();
+
+		return {
+			type: 'error',
+			status: 200,
+			message: form.get('message')
+		};
 	}
 };

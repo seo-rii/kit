@@ -6,6 +6,11 @@ export function load() {
 			setTimeout(() => {
 				resolve('worker streamed');
 			}, 100);
+		}),
+		failed: new Promise((_, reject) => {
+			setTimeout(() => {
+				reject(new Error('worker rejected'));
+			}, 150);
 		})
 	};
 }

@@ -23,10 +23,16 @@ export function create_service_worker_resolver(manifest_data) {
 	/** @type {Map<string, string>} */
 	const matcher_imports = new Map();
 
-	for (const [key, file] of Object.entries(manifest_data.matchers)) {
-		const name = `matcher_${matcher_imports.size}`;
-		matcher_imports.set(key, name);
-		imports.push(`import { match as ${name} } from ${s(`/${file}`)};`);
+	for (const route of routes) {
+		for (const param of route.params) {
+			if (param.matcher && !matcher_imports.has(param.matcher)) {
+				const name = `matcher_${matcher_imports.size}`;
+				matcher_imports.set(param.matcher, name);
+				imports.push(
+					`import { match as ${name} } from ${s(`/${manifest_data.matchers[param.matcher]}`)};`
+				);
+			}
+		}
 	}
 
 	const route_data = routes.map((route) => {
@@ -668,9 +674,29 @@ export function create_service_worker_resolver(manifest_data) {
 
 		function is_action_result(result) {
 			if (!result || typeof result !== 'object') return false;
-			if (result.type !== 'success' && result.type !== 'failure' && result.type !== 'redirect' && result.type !== 'error') return false;
-			if (result.type === 'error') return true;
-			return typeof result.status === 'number';
+
+			if (result.type === 'success') {
+				return typeof result.status === 'number' && result.status >= 200 && result.status <= 299;
+			}
+
+			if (result.type === 'failure') {
+				return is_error_status(result.status);
+			}
+
+			if (result.type === 'redirect') {
+				return (
+					typeof result.status === 'number' &&
+					result.status >= 300 &&
+					result.status <= 308 &&
+					typeof result.location === 'string'
+				);
+			}
+
+			if (result.type === 'error') {
+				return 'error' in result && (result.status === undefined || is_error_status(result.status));
+			}
+
+			return false;
 		}
 
 		function is_action_failure(result) {

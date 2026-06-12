@@ -108,8 +108,11 @@ test.describe('service worker data fallback', () => {
 		await app.goto('/worker-fallback/streaming');
 		await expect(page.locator('p.eager')).toHaveText('worker eager');
 		await expect(page.locator('p.loading')).toBeVisible();
+		await expect(page.locator('p.failed-loading')).toBeVisible();
 		await expect(page.locator('p.streamed')).toHaveText('worker streamed');
 		await expect(page.locator('p.loading')).toBeHidden();
+		await expect(page.locator('p.failed-error')).toHaveText('worker rejected');
+		await expect(page.locator('p.failed-loading')).toBeHidden();
 
 		const action = await page.evaluate(async () => {
 			const response = await fetch('/worker-fallback/target?/submit', {
@@ -139,6 +142,35 @@ test.describe('service worker data fallback', () => {
 			message: 'offline action',
 			network: 'online',
 			route: '/worker-fallback/target'
+		});
+
+		const action_shape = await page.evaluate(async () => {
+			const response = await fetch('/worker-fallback/target?/shape', {
+				method: 'POST',
+				headers: {
+					accept: 'application/json',
+					'content-type': 'application/x-www-form-urlencoded',
+					'x-sveltekit-action': 'true',
+					'x-test-worker-fallback': '1'
+				},
+				body: new URLSearchParams({ message: 'plain action data' })
+			});
+
+			return {
+				status: response.status,
+				worker: response.headers.get('x-sveltekit-worker'),
+				body: await response.json()
+			};
+		});
+
+		expect(action_shape.status).toBe(200);
+		expect(action_shape.worker).toBe('1');
+		expect(action_shape.body.type).toBe('success');
+		expect(action_shape.body.status).toBe(200);
+		expect(devalue.parse(action_shape.body.data)).toEqual({
+			type: 'error',
+			status: 200,
+			message: 'plain action data'
 		});
 	});
 });
