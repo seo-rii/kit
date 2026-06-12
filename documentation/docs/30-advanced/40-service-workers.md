@@ -115,6 +115,57 @@ self.addEventListener('fetch', (event) => {
 
 > [!NOTE] `build` and `prerendered` are empty arrays during development
 
+## Fallback page data
+
+> [!NOTE] This API is experimental and may change.
+
+If a page uses `+page.server.js`, client-side navigation needs a SvelteKit data request to reach the server. A service worker can use `resolve` from `$service-worker` together with `+page.worker.js` to provide fallback page data when that data request fails, while keeping SSR enabled for normal requests.
+
+```js
+/// file: src/service-worker.js
+import { build, resolve, version } from '$service-worker';
+
+const CACHE = `cache-${version}`;
+
+self.addEventListener('install', (event) => {
+	event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(build)));
+});
+
+self.addEventListener('fetch', (event) => {
+	if (event.request.method !== 'GET') return;
+
+	event.respondWith(
+		fetch(event.request).catch(async () => {
+			const cached = await caches.match(event.request);
+			return cached ?? resolve(event);
+		})
+	);
+});
+```
+
+Add `+page.worker.js` next to the page that needs fallback data:
+
+```js
+/// file: src/routes/products/+page.worker.js
+/** @type {import('./$types').PageWorkerLoad} */
+export async function load({ network, route, server }) {
+	if (network.status === 'online') {
+		const response = await server({ timeout: 1000 });
+		if (response.ok) return response.json();
+	}
+
+	return {
+		route: route.id,
+		stale: true,
+		products: []
+	};
+}
+```
+
+`resolve(event)` is network-first by default. It only runs a matching `+page.worker.js` load for SvelteKit data requests after `fetch(event.request)` fails. You can use `resolve(event, { strategy: 'worker-first' })` if your service worker already knows it should prefer fallback data, for example when `navigator.onLine === false`.
+
+`+page.worker.js` data replaces the page's server data for that request. This proof-of-concept does not run parent layout worker loads, action responses, custom transport hooks or streaming server data yet.
+
 ## Manual registration
 
 You can [disable automatic registration](configuration#serviceWorker) if you need to register the service worker with your own logic. The default registration looks something like this:

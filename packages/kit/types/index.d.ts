@@ -1721,6 +1721,51 @@ declare module '@sveltejs/kit' {
 		RouteId extends AppRouteId | null = AppRouteId | null
 	> = (event: ServerLoadEvent<Params, ParentData, RouteId>) => MaybePromise<OutputData>;
 
+	/**
+	 * The generic form of `PageWorkerLoad`. You should import it from `./$types`.
+	 *
+	 * This experimental API lets a service worker provide fallback data for a page server `load`
+	 * when the network request for SvelteKit data fails.
+	 */
+	export type WorkerLoad<
+		Params extends AppLayoutParams<'/'> = AppLayoutParams<'/'>,
+		ParentData extends Record<string, any> = Record<string, any>,
+		OutputData extends Record<string, any> | void = Record<string, any> | void,
+		RouteId extends AppRouteId | null = AppRouteId | null
+	> = (event: WorkerLoadEvent<Params, ParentData, RouteId>) => MaybePromise<OutputData>;
+
+	export interface WorkerNetworkState {
+		status: 'online' | 'offline' | 'unknown';
+	}
+
+	export interface WorkerLoadEvent<
+		Params extends AppLayoutParams<'/'> = AppLayoutParams<'/'>,
+		ParentData extends Record<string, any> = Record<string, any>,
+		RouteId extends AppRouteId | null = AppRouteId | null
+	> extends NavigationEvent<Params, RouteId> {
+		/**
+		 * The original SvelteKit data request.
+		 */
+		request: Request;
+		/**
+		 * Best-effort connectivity information available to the service worker.
+		 */
+		network: WorkerNetworkState;
+		/**
+		 * The invalidation vector from the SvelteKit data request.
+		 */
+		invalidated: boolean[];
+		/**
+		 * Returns fallback data from parent server layouts. This proof of concept currently resolves
+		 * to an empty object unless parent worker loads are added in a future iteration.
+		 */
+		parent: () => Promise<ParentData>;
+		/**
+		 * Retries the original server data request. Callers can provide a timeout or signal.
+		 */
+		server: (options?: { timeout?: number; signal?: AbortSignal }) => Promise<Response>;
+	}
+
 	export interface ServerLoadEvent<
 		Params extends AppLayoutParams<'/'> = AppLayoutParams<'/'>,
 		ParentData extends Record<string, any> = Record<string, any>,
@@ -2709,6 +2754,8 @@ declare module '@sveltejs/kit' {
 		universal?: string;
 		/** The `+page/layout.server.js/ts`. */
 		server?: string;
+		/** The `+page.worker.js/ts`. */
+		worker?: string;
 		parent_id?: string;
 		parent?: PageNode;
 		/** Filled with the pages that reference this layout (if this is a layout). */
@@ -2808,6 +2855,10 @@ declare module '@sveltejs/kit' {
 		entries?: PrerenderEntryGenerator;
 	}
 
+	interface WorkerNode {
+		load?: WorkerLoad;
+	}
+
 	interface SSRNode {
 		/** index into the `nodes` array in the generated `client/app.js`. */
 		index: number;
@@ -2820,6 +2871,7 @@ declare module '@sveltejs/kit' {
 
 		universal_id?: string;
 		server_id?: string;
+		worker_id?: string;
 
 		/**
 		 * During development, all styles are inlined for the page to avoid FOUC.
@@ -2834,6 +2886,8 @@ declare module '@sveltejs/kit' {
 		universal?: UniversalNode;
 		/** +page.server.js, +layout.server.js, or +server.js */
 		server?: ServerNode;
+		/** +page.worker.js */
+		worker?: WorkerNode;
 	}
 
 	type SSRNodeLoader = () => Promise<SSRNode>;
@@ -3944,6 +3998,27 @@ declare module '$service-worker' {
 	 * See [`config.kit.version`](https://svelte.dev/docs/kit/configuration#version). It's useful for generating unique cache names inside your service worker, so that a later deployment of your app can invalidate old caches.
 	 */
 	export const version: string;
+	/**
+	 * Options for resolving a service worker fetch event with SvelteKit's route-aware data fallback handling.
+	 */
+	export interface ResolveOptions {
+		/**
+		 * The fallback strategy. `network-first` fetches from the server and runs a matching
+		 * `+page.worker.js` load only if that request fails. `worker-first` runs a matching
+		 * `+page.worker.js` load before fetching from the server, and falls back to the
+		 * server if no worker route matches.
+		 */
+		strategy?: 'network-first' | 'worker-first';
+	}
+	/**
+	 * Resolve a service worker fetch event with SvelteKit's route-aware data fallback handling.
+	 * The resolver tries the network first, then runs a matching `+page.worker.js` load function
+	 * for failed SvelteKit data requests.
+	 */
+	export function resolve(
+		event: FetchEvent | { request: Request } | Request,
+		options?: ResolveOptions
+	): Promise<Response>;
 }
 
 /**
