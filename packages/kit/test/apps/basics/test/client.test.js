@@ -32,6 +32,28 @@ test.describe('Caching', () => {
 	});
 });
 
+test.describe('service worker data fallback', () => {
+	test('renders a page from +page.worker.js when the service worker uses worker-first data', async ({
+		app,
+		page
+	}) => {
+		test.skip(!!process.env.DEV, 'service worker build assets are empty in dev mode');
+
+		await page.goto('/worker-fallback/start');
+		await page.evaluate(() => navigator.serviceWorker.ready);
+		await page.reload();
+		await page.waitForLoadState('networkidle');
+		await page.waitForSelector('body.started');
+		expect(await page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
+
+		await app.goto('/worker-fallback/target');
+		await expect(page.locator('h1')).toHaveText('worker data for /worker-fallback/target');
+		await expect(page.locator('#source')).toHaveText('worker');
+		await expect(page.locator('#stale')).toHaveText('true');
+		await expect(page.locator('#network')).toHaveText('online');
+	});
+});
+
 test.describe('Endpoints', () => {
 	test('calls a delete handler', async ({ page }) => {
 		await page.goto('/delete-route');

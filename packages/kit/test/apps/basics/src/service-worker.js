@@ -1,4 +1,4 @@
-import { build, version } from '$service-worker';
+import { build, resolve, version } from '$service-worker';
 import { PUBLIC_STATIC } from '$env/static/public';
 
 const name = `cache-${version}-${PUBLIC_STATIC}`;
@@ -28,6 +28,12 @@ self.addEventListener('fetch', (event) => {
 	const url = new URL(request.url);
 	const cached = caches.match(request);
 
+	if (url.pathname.endsWith('/worker-fallback/target/__data.json')) {
+		// @ts-expect-error
+		event.respondWith(resolve(event, { strategy: 'worker-first' }));
+		return;
+	}
+
 	if (url.origin === location.origin && build.includes(url.pathname)) {
 		// always return build files from cache
 		// @ts-expect-error
@@ -47,8 +53,8 @@ self.addEventListener('fetch', (event) => {
 			}
 		});
 
-		// ...but if it fails, fall back to cache if available
+		// ...but if it fails, fall back to cache or SvelteKit's route-aware worker resolver
 		// @ts-expect-error
-		event.respondWith(promise.catch(() => cached || promise));
+		event.respondWith(promise.catch(() => cached.then((response) => response || resolve(event))));
 	}
 });
