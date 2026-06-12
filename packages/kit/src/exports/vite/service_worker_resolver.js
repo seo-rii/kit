@@ -124,16 +124,16 @@ export function create_service_worker_resolver(manifest_data) {
 				}
 
 				handled = true;
-				let uses_parent = false;
+				const uses = create_uses();
 				const data = await node.worker.load({
 					request,
-					url: page_url,
-					route: { id: route_match.route.id },
-					params: route_match.params,
+					url: make_trackable_url(page_url, uses),
+					route: track_route({ id: route_match.route.id }, uses),
+					params: track_params(route_match.params, uses),
 					network: get_network_state(),
 					invalidated,
 					parent: async () => {
-						uses_parent = true;
+						uses.parent = true;
 						return { ...parent_data };
 					},
 					server: (options) => fetch_with_options(request, options)
@@ -142,7 +142,7 @@ export function create_service_worker_resolver(manifest_data) {
 				nodes[i] = {
 					type: 'data',
 					data,
-					uses: uses_parent ? { parent: 1 } : {}
+					uses: serialize_uses(uses)
 				};
 
 				if (data && typeof data === 'object') {
@@ -202,6 +202,86 @@ export function create_service_worker_resolver(manifest_data) {
 			}
 
 			return result;
+		}
+
+		function create_uses() {
+			return {
+				params: new Set(),
+				parent: false,
+				route: false,
+				url: false,
+				search_params: new Set()
+			};
+		}
+
+		function serialize_uses(uses) {
+			const result = {};
+
+			if (uses.params.size > 0) result.params = Array.from(uses.params);
+			if (uses.search_params.size > 0) {
+				result.search_params = Array.from(uses.search_params);
+			}
+
+			if (uses.parent) result.parent = 1;
+			if (uses.route) result.route = 1;
+			if (uses.url) result.url = 1;
+
+			return result;
+		}
+
+		function track_params(params, uses) {
+			return new Proxy(params, {
+				get(target, key) {
+					if (typeof key === 'string') uses.params.add(key);
+					return target[key];
+				}
+			});
+		}
+
+		function track_route(route, uses) {
+			return new Proxy(route, {
+				get(target, key) {
+					if (typeof key === 'string') uses.route = true;
+					return target[key];
+				}
+			});
+		}
+
+		function make_trackable_url(url, uses) {
+			const tracked = new URL(url);
+
+			Object.defineProperty(tracked, 'searchParams', {
+				value: new Proxy(tracked.searchParams, {
+					get(target, key) {
+						if (key === 'get' || key === 'getAll' || key === 'has') {
+							return (param, ...rest) => {
+								uses.search_params.add(param);
+								return target[key](param, ...rest);
+							};
+						}
+
+						uses.url = true;
+						const value = Reflect.get(target, key);
+						return typeof value === 'function' ? value.bind(target) : value;
+					}
+				}),
+				enumerable: true,
+				configurable: true
+			});
+
+			for (const property of ['href', 'pathname', 'search', 'toString', 'toJSON']) {
+				Object.defineProperty(tracked, property, {
+					get() {
+						uses.url = true;
+						const value = url[property];
+						return typeof value === 'function' ? value.bind(url) : value;
+					},
+					enumerable: true,
+					configurable: true
+				});
+			}
+
+			return tracked;
 		}
 
 		function render_data_response(nodes) {

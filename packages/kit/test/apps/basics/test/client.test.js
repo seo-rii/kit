@@ -52,13 +52,15 @@ test.describe('service worker data fallback', () => {
 		await expect(page.locator('#layout-network')).toHaveText('online');
 		await expect(page.locator('#layout-seen')).toHaveText('layout-worker');
 		await expect(page.locator('#source')).toHaveText('worker');
+		await expect(page.locator('#path')).toHaveText('/worker-fallback/target');
+		await expect(page.locator('#tracked')).toHaveText('none');
 		await expect(page.locator('#stale')).toHaveText('true');
 		await expect(page.locator('#network')).toHaveText('online');
 
 		const partial = await page.evaluate(async () => {
 			for (const invalidated of ['01', '001', '0001', '00001']) {
 				const response = await fetch(
-					`/worker-fallback/target/__data.json?x-sveltekit-invalidated=${invalidated}`
+					`/worker-fallback/target/__data.json?tracked=partial&x-sveltekit-invalidated=${invalidated}`
 				);
 				const text = await response.text();
 				if (response.headers.get('x-sveltekit-worker') === '1' && text.includes('layoutSeen')) {
@@ -69,7 +71,11 @@ test.describe('service worker data fallback', () => {
 
 		expect(partial).toBeDefined();
 		expect(partial?.text).toContain('layout-worker');
+		expect(partial?.text).toContain('partial');
 		expect(partial?.text).toContain('"parent":1');
+		expect(partial?.text).toContain('"route":1');
+		expect(partial?.text).toContain('"url":1');
+		expect(partial?.text).toContain('"search_params":["tracked"]');
 	});
 });
 

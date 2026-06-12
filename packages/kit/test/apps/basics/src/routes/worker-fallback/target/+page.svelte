@@ -8,6 +8,8 @@
 <p id="layout-network">{data.layoutNetwork}</p>
 <p id="layout-seen">{data.layoutSeen}</p>
 <p id="source">{data.source}</p>
+<p id="path">{data.path}</p>
+<p id="tracked">{data.tracked}</p>
 <p id="stale">{String(data.stale)}</p>
 {#if data.network}
 	<p id="network">{data.network}</p>
