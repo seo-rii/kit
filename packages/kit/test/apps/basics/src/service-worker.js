@@ -27,6 +27,7 @@ self.addEventListener('fetch', (event) => {
 
 	if (
 		url.pathname.endsWith('/worker-fallback/target/__data.json') ||
+		url.pathname.endsWith('/worker-fallback/streaming/__data.json') ||
 		request.headers.has('x-test-worker-fallback')
 	) {
 		// @ts-expect-error

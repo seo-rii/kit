@@ -190,13 +190,7 @@ export function create_service_worker_resolver(manifest_data) {
 
 			if (!handled) return null;
 
-			return new Response(render_data_response(nodes), {
-				headers: {
-					'content-type': 'application/json',
-					'cache-control': 'private, no-store',
-					'x-sveltekit-worker': '1'
-				}
-			});
+			return data_response(nodes);
 		}
 
 		async function resolve_worker_action(request) {
@@ -458,11 +452,137 @@ export function create_service_worker_resolver(manifest_data) {
 			return tracked;
 		}
 
+		function data_response(nodes) {
+			const { data, chunks } = render_data_response(nodes);
+
+			if (!chunks) {
+				return new Response(data, {
+					headers: {
+						'content-type': 'application/json',
+						'cache-control': 'private, no-store',
+						'x-sveltekit-worker': '1'
+					}
+				});
+			}
+
+			const encoder = new TextEncoder();
+
+			return new Response(
+				new ReadableStream({
+					async start(controller) {
+						controller.enqueue(encoder.encode(data));
+
+						for await (const chunk of chunks) {
+							controller.enqueue(encoder.encode(chunk));
+						}
+
+						controller.close();
+					},
+					type: 'bytes'
+				}),
+				{
+					headers: {
+						'content-type': 'text/sveltekit-data',
+						'cache-control': 'private, no-store',
+						'x-sveltekit-worker': '1'
+					}
+				}
+			);
+		}
+
 		function render_data_response(nodes) {
-			return '{"type":"data","nodes":[' + nodes.map((node) => {
-				if (!node || node.type === 'skip') return JSON.stringify(node);
-				return '{"type":"data","data":' + devalue.stringify(node.data) + ',"uses":' + JSON.stringify(node.uses) + '}';
-			}).join(',') + ']}\\n';
+			let promise_id = 1;
+			const iterator = create_async_iterator();
+
+			const reducers = {
+				Promise: (thing) => {
+					if (typeof thing?.then !== 'function') return;
+
+					const id = promise_id++;
+					let key = 'data';
+
+					const promise = thing
+						.catch((error) => {
+							key = 'error';
+							return serialize_error(error);
+						})
+						.then((value) => {
+							let str;
+
+							try {
+								str = devalue.stringify(value, reducers);
+							} catch {
+								key = 'error';
+								str = devalue.stringify(serialize_error(new Error('Failed to serialize promise while rendering worker data')), reducers);
+							}
+
+							return \`{"type":"chunk","id":\${id},"\${key}":\${str}}\\n\`;
+						});
+
+					iterator.add(promise);
+
+					return id;
+				}
+			};
+
+			const data =
+				'{"type":"data","nodes":[' +
+				nodes
+					.map((node) => {
+						if (!node || node.type === 'skip') return JSON.stringify(node);
+						return (
+							'{"type":"data","data":' +
+							devalue.stringify(node.data, reducers) +
+							',"uses":' +
+							JSON.stringify(node.uses) +
+							'}'
+						);
+					})
+					.join(',') +
+				']}\\n';
+
+			return {
+				data,
+				chunks: promise_id > 1 ? iterator.iterate() : null
+			};
+		}
+
+		function create_async_iterator() {
+			let resolved = -1;
+			let returned = -1;
+			const deferred = [];
+
+			return {
+				iterate: () => {
+					return {
+						[Symbol.asyncIterator]() {
+							return {
+								next: async () => {
+									const next = deferred[++returned];
+									if (!next) return { value: null, done: true };
+
+									return { value: await next.promise, done: false };
+								}
+							};
+						}
+					};
+				},
+				add: (promise) => {
+					deferred.push(with_resolvers());
+					void promise.then((value) => {
+						deferred[++resolved].resolve(value);
+					});
+				}
+			};
+		}
+
+		function with_resolvers() {
+			let resolve;
+			const promise = new Promise((fulfil) => {
+				resolve = fulfil;
+			});
+
+			return { promise, resolve };
 		}
 
 		function action_response(result) {

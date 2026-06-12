@@ -105,6 +105,12 @@ test.describe('service worker data fallback', () => {
 		expect(matcher).toBeDefined();
 		expect(matcher?.nodes.find((node) => node?.type === 'data')?.data).toContain('slug');
 
+		await app.goto('/worker-fallback/streaming');
+		await expect(page.locator('p.eager')).toHaveText('worker eager');
+		await expect(page.locator('p.loading')).toBeVisible();
+		await expect(page.locator('p.streamed')).toHaveText('worker streamed');
+		await expect(page.locator('p.loading')).toBeHidden();
+
 		const action = await page.evaluate(async () => {
 			const response = await fetch('/worker-fallback/target?/submit', {
 				method: 'POST',
