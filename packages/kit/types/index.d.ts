@@ -4016,7 +4016,7 @@ declare module '$service-worker' {
 	 * for failed SvelteKit data requests.
 	 */
 	export function resolve(
-		event: FetchEvent | { request: Request } | Request,
+		event: { request: Request } | Request,
 		options?: ResolveOptions
 	): Promise<Response>;
 }

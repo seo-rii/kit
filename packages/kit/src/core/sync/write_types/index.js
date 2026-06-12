@@ -399,6 +399,8 @@ function process_node(node, outdir, is_page, proxies, all_pages_have_load = true
 	/** @type {string} */
 	let server_data;
 	/** @type {string} */
+	let worker_data = 'null';
+	/** @type {string} */
 	let data;
 
 	ensureProxies(node, proxies);
@@ -461,6 +463,9 @@ function process_node(node, outdir, is_page, proxies, all_pages_have_load = true
 			fs.writeFileSync(`${outdir}/proxy${basename}`, proxy.code);
 		}
 
+		worker_data = get_data_type(node.worker, 'null', proxy, true);
+		exports.push(`export type ${prefix}WorkerData = ${worker_data};`);
+
 		const parent_type = `${prefix}ServerParentData`;
 		if (!node.server) {
 			declarations.push(`type ${parent_type} = ${get_parent_type(node, 'LayoutServerData')};`);
@@ -478,6 +483,8 @@ function process_node(node, outdir, is_page, proxies, all_pages_have_load = true
 
 	const parent_type = `${prefix}ParentData`;
 	declarations.push(`type ${parent_type} = ${get_parent_type(node, 'LayoutData')};`);
+	const server_like_data =
+		is_page && node.worker ? `${prefix}ServerData | ${prefix}WorkerData` : `${prefix}ServerData`;
 
 	if (node.universal) {
 		const proxy = proxies.universal;
@@ -487,7 +494,7 @@ function process_node(node, outdir, is_page, proxies, all_pages_have_load = true
 
 		const type = get_data_type(
 			node.universal,
-			`${parent_type} & EnsureDefined<${prefix}ServerData>`,
+			`${parent_type} & EnsureDefined<${server_like_data}>`,
 			proxy
 		);
 
@@ -498,12 +505,14 @@ function process_node(node, outdir, is_page, proxies, all_pages_have_load = true
 				? 'Partial<App.PageData> & Record<string, any> | void'
 				: `OutputDataShape<${parent_type}>`;
 		exports.push(
-			`export type ${prefix}Load<OutputData extends ${output_data_shape} = ${output_data_shape}> = Kit.Load<${params}, ${prefix}ServerData, ${parent_type}, OutputData, ${route_id}>;`
+			`export type ${prefix}Load<OutputData extends ${output_data_shape} = ${output_data_shape}> = Kit.Load<${params}, ${server_like_data}, ${parent_type}, OutputData, ${route_id}>;`
 		);
 
 		exports.push(`export type ${prefix}LoadEvent = Parameters<${prefix}Load>[0];`);
-	} else if (server_data === 'null') {
+	} else if (server_data === 'null' && worker_data === 'null') {
 		data = `Expand<${parent_type}>`;
+	} else if (worker_data !== 'null') {
+		data = `Expand<Omit<${parent_type}, keyof ${prefix}ServerData | keyof ${prefix}WorkerData> & OptionalUnion<EnsureDefined<${server_like_data}>>>`;
 	} else {
 		data = `Expand<Omit<${parent_type}, keyof ${prefix}ServerData> & EnsureDefined<${prefix}ServerData>>`;
 	}

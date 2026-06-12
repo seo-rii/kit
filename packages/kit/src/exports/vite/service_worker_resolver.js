@@ -9,6 +9,7 @@ const HTML_DATA_SUFFIX = '.html__data.json';
  */
 export function create_service_worker_resolver(manifest_data) {
 	const routes = manifest_data.routes.filter((route) => route.page && route.leaf?.worker);
+	/** @type {string[]} */
 	const imports = [];
 
 	const route_data = routes.map((route, i) => {
