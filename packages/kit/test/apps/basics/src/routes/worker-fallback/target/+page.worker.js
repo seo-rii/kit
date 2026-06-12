@@ -1,9 +1,12 @@
 /** @type {import('./$types').PageWorkerLoad} */
-export function load({ network, route }) {
+export async function load({ network, parent, route }) {
+	const data = await parent();
+
 	return {
 		message: `worker data for ${route.id}`,
 		source: 'worker',
 		stale: true,
-		network: network.status
+		network: network.status,
+		layoutSeen: data.layoutSource
 	};
 }

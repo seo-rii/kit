@@ -36,8 +36,8 @@ interface RouteServerModule {
 
 interface RouteWorkerModule {
 	kind: 'worker';
-	is_page: true;
-	is_layout: false;
+	is_page: boolean;
+	is_layout: boolean;
 }
 
 export type RouteFile = RouteComponent | RouteSharedModule | RouteServerModule | RouteWorkerModule;

@@ -33,7 +33,7 @@ test.describe('Caching', () => {
 });
 
 test.describe('service worker data fallback', () => {
-	test('renders a page from +page.worker.js when the service worker uses worker-first data', async ({
+	test('renders layout and page data from worker modules when the service worker uses worker-first data', async ({
 		app,
 		page
 	}) => {
@@ -48,9 +48,28 @@ test.describe('service worker data fallback', () => {
 
 		await app.goto('/worker-fallback/target');
 		await expect(page.locator('h1')).toHaveText('worker data for /worker-fallback/target');
+		await expect(page.locator('#layout-source')).toHaveText('layout-worker');
+		await expect(page.locator('#layout-network')).toHaveText('online');
+		await expect(page.locator('#layout-seen')).toHaveText('layout-worker');
 		await expect(page.locator('#source')).toHaveText('worker');
 		await expect(page.locator('#stale')).toHaveText('true');
 		await expect(page.locator('#network')).toHaveText('online');
+
+		const partial = await page.evaluate(async () => {
+			for (const invalidated of ['01', '001', '0001', '00001']) {
+				const response = await fetch(
+					`/worker-fallback/target/__data.json?x-sveltekit-invalidated=${invalidated}`
+				);
+				const text = await response.text();
+				if (response.headers.get('x-sveltekit-worker') === '1' && text.includes('layoutSeen')) {
+					return { invalidated, text };
+				}
+			}
+		});
+
+		expect(partial).toBeDefined();
+		expect(partial?.text).toContain('layout-worker');
+		expect(partial?.text).toContain('"parent":1');
 	});
 });
 

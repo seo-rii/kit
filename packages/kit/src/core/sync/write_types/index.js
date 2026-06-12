@@ -456,7 +456,7 @@ function process_node(node, outdir, is_page, proxies, all_pages_have_load = true
 	}
 	exports.push(`export type ${prefix}ServerData = ${server_data};`);
 
-	if (is_page && node.worker) {
+	if (node.worker) {
 		const basename = path.basename(node.worker);
 		const proxy = proxies.worker;
 		if (proxy?.modified) {
@@ -466,10 +466,10 @@ function process_node(node, outdir, is_page, proxies, all_pages_have_load = true
 		worker_data = get_data_type(node.worker, 'null', proxy, true);
 		exports.push(`export type ${prefix}WorkerData = ${worker_data};`);
 
-		const parent_type = `${prefix}ServerParentData`;
-		if (!node.server) {
-			declarations.push(`type ${parent_type} = ${get_parent_type(node, 'LayoutServerData')};`);
-		}
+		const parent_type = `${prefix}WorkerParentData`;
+		declarations.push(
+			`type ${parent_type} = ${get_parent_type(node, (parent) => (parent.worker ? 'LayoutWorkerData' : null))};`
+		);
 		const output_data_shape =
 			node.universal || (!is_page && all_pages_have_load)
 				? 'Partial<App.PageData> & Record<string, any> | void'
@@ -483,8 +483,9 @@ function process_node(node, outdir, is_page, proxies, all_pages_have_load = true
 
 	const parent_type = `${prefix}ParentData`;
 	declarations.push(`type ${parent_type} = ${get_parent_type(node, 'LayoutData')};`);
-	const server_like_data =
-		is_page && node.worker ? `${prefix}ServerData | ${prefix}WorkerData` : `${prefix}ServerData`;
+	const server_like_data = node.worker
+		? `${prefix}ServerData | ${prefix}WorkerData`
+		: `${prefix}ServerData`;
 
 	if (node.universal) {
 		const proxy = proxies.universal;
@@ -589,7 +590,7 @@ function createProxy(file_path, is_server) {
 /**
  * Get the parent type string by recursively looking up the parent layout and accumulate them to one type.
  * @param {import('types').PageNode} node
- * @param {string} type
+ * @param {string | ((node: import('types').PageNode) => string | null)} type
  */
 function get_parent_type(node, type) {
 	const parent_imports = [];
@@ -598,10 +599,17 @@ function get_parent_type(node, type) {
 
 	while (parent) {
 		const d = node.depth - parent.depth;
-		// unshift because we need it the other way round for the import string
-		parent_imports.unshift(
-			`${d === 0 ? '' : `import('${'../'.repeat(d)}${'$types.js'}').`}${type}`
-		);
+		const parent_type = typeof type === 'function' ? type(parent) : type;
+		if (parent_type) {
+			const prefix = d === 0 ? '' : `import('${'../'.repeat(d)}${'$types.js'}').`;
+			// unshift because we need it the other way round for the import string
+			parent_imports.unshift(
+				parent_type
+					.split('|')
+					.map((type) => `${prefix}${type.trim()}`)
+					.join(' | ')
+			);
+		}
 		parent = parent.parent;
 	}
 
@@ -612,7 +620,7 @@ function get_parent_type(node, type) {
 		// so reflect that in the type definition.
 		// EnsureDefined is necessary because {something: string} & null becomes null.
 		// Output types of server loads can be null but when passed in through the `parent` parameter they are the empty object instead.
-		parent_str = `Omit<${parent_str}, keyof ${parent_imports[i]}> & EnsureDefined<${parent_imports[i]}>`;
+		parent_str = `Omit<${parent_str}, keyof (${parent_imports[i]})> & EnsureDefined<${parent_imports[i]}>`;
 	}
 	return parent_str;
 }

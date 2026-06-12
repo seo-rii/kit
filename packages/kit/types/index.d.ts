@@ -1722,10 +1722,10 @@ declare module '@sveltejs/kit' {
 	> = (event: ServerLoadEvent<Params, ParentData, RouteId>) => MaybePromise<OutputData>;
 
 	/**
-	 * The generic form of `PageWorkerLoad`. You should import it from `./$types`.
+	 * The generic form of `PageWorkerLoad` and `LayoutWorkerLoad`. You should import those from `./$types`.
 	 *
-	 * This experimental API lets a service worker provide fallback data for a page server `load`
-	 * when the network request for SvelteKit data fails.
+	 * This experimental API lets a service worker provide fallback data for page and layout server
+	 * `load` functions when the network request for SvelteKit data fails.
 	 */
 	export type WorkerLoad<
 		Params extends AppLayoutParams<'/'> = AppLayoutParams<'/'>,
@@ -1756,8 +1756,8 @@ declare module '@sveltejs/kit' {
 		 */
 		invalidated: boolean[];
 		/**
-		 * Returns fallback data from parent server layouts. This proof of concept currently resolves
-		 * to an empty object unless parent worker loads are added in a future iteration.
+		 * Returns fallback data from parent layouts that was provided by earlier worker loads in the
+		 * current SvelteKit data request.
 		 */
 		parent: () => Promise<ParentData>;
 		/**
@@ -2754,7 +2754,7 @@ declare module '@sveltejs/kit' {
 		universal?: string;
 		/** The `+page/layout.server.js/ts`. */
 		server?: string;
-		/** The `+page.worker.js/ts`. */
+		/** The `+page.worker.js/ts` or `+layout.worker.js/ts`. */
 		worker?: string;
 		parent_id?: string;
 		parent?: PageNode;
@@ -2886,7 +2886,7 @@ declare module '@sveltejs/kit' {
 		universal?: UniversalNode;
 		/** +page.server.js, +layout.server.js, or +server.js */
 		server?: ServerNode;
-		/** +page.worker.js */
+		/** +page.worker.js or +layout.worker.js */
 		worker?: WorkerNode;
 	}
 
@@ -4003,17 +4003,17 @@ declare module '$service-worker' {
 	 */
 	export interface ResolveOptions {
 		/**
-		 * The fallback strategy. `network-first` fetches from the server and runs a matching
-		 * `+page.worker.js` load only if that request fails. `worker-first` runs a matching
-		 * `+page.worker.js` load before fetching from the server, and falls back to the
+		 * The fallback strategy. `network-first` fetches from the server and runs matching
+		 * `+layout.worker.js` and `+page.worker.js` loads only if that request fails. `worker-first`
+		 * runs matching worker loads before fetching from the server, and falls back to the
 		 * server if no worker route matches.
 		 */
 		strategy?: 'network-first' | 'worker-first';
 	}
 	/**
 	 * Resolve a service worker fetch event with SvelteKit's route-aware data fallback handling.
-	 * The resolver tries the network first, then runs a matching `+page.worker.js` load function
-	 * for failed SvelteKit data requests.
+	 * The resolver tries the network first, then runs matching `+layout.worker.js` and
+	 * `+page.worker.js` load functions for failed SvelteKit data requests.
 	 */
 	export function resolve(
 		event: { request: Request } | Request,

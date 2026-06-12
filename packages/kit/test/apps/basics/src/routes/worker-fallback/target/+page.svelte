@@ -4,6 +4,9 @@
 </script>
 
 <h1>{data.message}</h1>
+<p id="layout-source">{data.layoutSource}</p>
+<p id="layout-network">{data.layoutNetwork}</p>
+<p id="layout-seen">{data.layoutSeen}</p>
 <p id="source">{data.source}</p>
 <p id="stale">{String(data.stale)}</p>
 {#if data.network}

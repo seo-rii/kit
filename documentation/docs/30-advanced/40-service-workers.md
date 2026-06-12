@@ -115,11 +115,11 @@ self.addEventListener('fetch', (event) => {
 
 > [!NOTE] `build` and `prerendered` are empty arrays during development
 
-## Fallback page data
+## Fallback route data
 
 > [!NOTE] This API is experimental and may change.
 
-If a page uses `+page.server.js`, client-side navigation needs a SvelteKit data request to reach the server. A service worker can use `resolve` from `$service-worker` together with `+page.worker.js` to provide fallback page data when that data request fails, while keeping SSR enabled for normal requests.
+If a route uses `+layout.server.js` or `+page.server.js`, client-side navigation needs a SvelteKit data request to reach the server. A service worker can use `resolve` from `$service-worker` together with `+layout.worker.js` and `+page.worker.js` to provide fallback route data when that data request fails, while keeping SSR enabled for normal requests.
 
 ```js
 /// file: src/service-worker.js
@@ -137,34 +137,47 @@ self.addEventListener('fetch', (event) => {
 	event.respondWith(
 		fetch(event.request).catch(async () => {
 			const cached = await caches.match(event.request);
-			return cached ?? resolve(event);
+			return cached ?? resolve(event, { strategy: 'worker-first' });
 		})
 	);
 });
 ```
 
-Add `+page.worker.js` next to the page that needs fallback data:
+Add worker modules next to the layouts and pages that need fallback data:
+
+```js
+/// file: src/routes/products/+layout.worker.js
+/** @type {import('./$types').LayoutWorkerLoad} */
+export async function load({ network }) {
+	return {
+		categories: network.status === 'offline' ? [] : ['featured']
+	};
+}
+```
 
 ```js
 /// file: src/routes/products/+page.worker.js
 /** @type {import('./$types').PageWorkerLoad} */
-export async function load({ network, route, server }) {
+export async function load({ network, parent, route, server }) {
 	if (network.status === 'online') {
 		const response = await server({ timeout: 1000 });
 		if (response.ok) return response.json();
 	}
 
+	const { categories } = await parent();
+
 	return {
 		route: route.id,
 		stale: true,
+		categories,
 		products: []
 	};
 }
 ```
 
-`resolve(event)` is network-first by default. It only runs a matching `+page.worker.js` load for SvelteKit data requests after `fetch(event.request)` fails. You can use `resolve(event, { strategy: 'worker-first' })` if your service worker already knows it should prefer fallback data, for example when `navigator.onLine === false`.
+`resolve(event)` is network-first by default. It only runs matching worker loads for SvelteKit data requests after `fetch(event.request)` fails. You can use `resolve(event, { strategy: 'worker-first' })` if your service worker already knows it should prefer fallback data, for example when `navigator.onLine === false`.
 
-`+page.worker.js` data replaces the page's server data for that request. This proof-of-concept does not run parent layout worker loads, action responses, custom transport hooks or streaming server data yet.
+Worker data replaces the matching layout or page server data for that request. If an invalidated server layout or page does not have a corresponding worker module, the resolver leaves the original network failure in place instead of returning partial route data. This proof-of-concept does not handle action responses, custom transport hooks or streaming server data yet.
 
 ## Manual registration
 

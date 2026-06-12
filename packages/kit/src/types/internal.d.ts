@@ -224,7 +224,7 @@ export interface PageNode {
 	universal?: string;
 	/** The `+page/layout.server.js/ts`. */
 	server?: string;
-	/** The `+page.worker.js/ts`. */
+	/** The `+page.worker.js/ts` or `+layout.worker.js/ts`. */
 	worker?: string;
 	parent_id?: string;
 	parent?: PageNode;
@@ -501,7 +501,7 @@ export interface SSRNode {
 	universal?: UniversalNode;
 	/** +page.server.js, +layout.server.js, or +server.js */
 	server?: ServerNode;
-	/** +page.worker.js */
+	/** +page.worker.js or +layout.worker.js */
 	worker?: WorkerNode;
 }
 

@@ -1749,10 +1749,10 @@ export type ServerLoad<
 > = (event: ServerLoadEvent<Params, ParentData, RouteId>) => MaybePromise<OutputData>;
 
 /**
- * The generic form of `PageWorkerLoad`. You should import it from `./$types`.
+ * The generic form of `PageWorkerLoad` and `LayoutWorkerLoad`. You should import those from `./$types`.
  *
- * This experimental API lets a service worker provide fallback data for a page server `load`
- * when the network request for SvelteKit data fails.
+ * This experimental API lets a service worker provide fallback data for page and layout server
+ * `load` functions when the network request for SvelteKit data fails.
  */
 export type WorkerLoad<
 	Params extends AppLayoutParams<'/'> = AppLayoutParams<'/'>,
@@ -1783,8 +1783,8 @@ export interface WorkerLoadEvent<
 	 */
 	invalidated: boolean[];
 	/**
-	 * Returns fallback data from parent server layouts. This proof of concept currently resolves
-	 * to an empty object unless parent worker loads are added in a future iteration.
+	 * Returns fallback data from parent layouts that was provided by earlier worker loads in the
+	 * current SvelteKit data request.
 	 */
 	parent: () => Promise<ParentData>;
 	/**
