@@ -1748,6 +1748,51 @@ export type ServerLoad<
 	RouteId extends AppRouteId | null = AppRouteId | null
 > = (event: ServerLoadEvent<Params, ParentData, RouteId>) => MaybePromise<OutputData>;
 
+/**
+ * The generic form of `PageWorkerLoad`. You should import it from `./$types`.
+ *
+ * This experimental API lets a service worker provide fallback data for a page server `load`
+ * when the network request for SvelteKit data fails.
+ */
+export type WorkerLoad<
+	Params extends AppLayoutParams<'/'> = AppLayoutParams<'/'>,
+	ParentData extends Record<string, any> = Record<string, any>,
+	OutputData extends Record<string, any> | void = Record<string, any> | void,
+	RouteId extends AppRouteId | null = AppRouteId | null
+> = (event: WorkerLoadEvent<Params, ParentData, RouteId>) => MaybePromise<OutputData>;
+
+export interface WorkerNetworkState {
+	status: 'online' | 'offline' | 'unknown';
+}
+
+export interface WorkerLoadEvent<
+	Params extends AppLayoutParams<'/'> = AppLayoutParams<'/'>,
+	ParentData extends Record<string, any> = Record<string, any>,
+	RouteId extends AppRouteId | null = AppRouteId | null
+> extends NavigationEvent<Params, RouteId> {
+	/**
+	 * The original SvelteKit data request.
+	 */
+	request: Request;
+	/**
+	 * Best-effort connectivity information available to the service worker.
+	 */
+	network: WorkerNetworkState;
+	/**
+	 * The invalidation vector from the SvelteKit data request.
+	 */
+	invalidated: boolean[];
+	/**
+	 * Returns fallback data from parent server layouts. This proof of concept currently resolves
+	 * to an empty object unless parent worker loads are added in a future iteration.
+	 */
+	parent: () => Promise<ParentData>;
+	/**
+	 * Retries the original server data request. Callers can provide a timeout or signal.
+	 */
+	server: (options?: { timeout?: number; signal?: AbortSignal }) => Promise<Response>;
+}
+
 export interface ServerLoadEvent<
 	Params extends AppLayoutParams<'/'> = AppLayoutParams<'/'>,
 	ParentData extends Record<string, any> = Record<string, any>,

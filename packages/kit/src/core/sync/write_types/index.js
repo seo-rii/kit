@@ -19,7 +19,8 @@ const is_whitespace = (/** @type {string} */ char) => /\s/.test(char);
  *
  *  @typedef {{
  *   server: Proxy,
- *   universal: Proxy
+ *   universal: Proxy,
+ *   worker: Proxy
  *  }} Proxies
  *
  *  @typedef {Map<import('types').PageNode, {route: import('types').RouteData, proxies: Proxies}>} RoutesMap
@@ -77,6 +78,7 @@ export function write_all_types(config, manifest_data) {
 		while (node) {
 			if (node.universal) input_files.push(node.universal);
 			if (node.server) input_files.push(node.server);
+			if (node.worker) input_files.push(node.worker);
 			node = node.parent ?? null;
 		}
 
@@ -85,6 +87,7 @@ export function write_all_types(config, manifest_data) {
 		while (node) {
 			if (node.universal) input_files.push(node.universal);
 			if (node.server) input_files.push(node.server);
+			if (node.worker) input_files.push(node.worker);
 			node = node.parent ?? null;
 		}
 
@@ -165,7 +168,7 @@ function create_routes_map(manifest_data) {
 	const map = new Map();
 	for (const route of manifest_data.routes) {
 		if (route.leaf) {
-			map.set(route.leaf, { route, proxies: { server: null, universal: null } });
+			map.set(route.leaf, { route, proxies: { server: null, universal: null, worker: null } });
 		}
 	}
 	return map;
@@ -243,7 +246,7 @@ function update_types(config, routes, route, to_delete = new Set()) {
 		let route_info = routes.get(route.leaf);
 		if (!route_info) {
 			// This should be defined, but belts and braces
-			route_info = { route, proxies: { server: null, universal: null } };
+			route_info = { route, proxies: { server: null, universal: null, worker: null } };
 			routes.set(route.leaf, route_info);
 		}
 
@@ -263,6 +266,10 @@ function update_types(config, routes, route, to_delete = new Set()) {
 		if (proxies.universal) {
 			route_info.proxies.universal = proxies.universal;
 			if (proxies.universal?.modified) to_delete.delete(proxies.universal.file_name);
+		}
+		if (proxies.worker) {
+			route_info.proxies.worker = proxies.worker;
+			if (proxies.worker?.modified) to_delete.delete(proxies.worker.file_name);
 		}
 
 		if (route.leaf.server) {
@@ -335,7 +342,7 @@ function update_types(config, routes, route, to_delete = new Set()) {
 			route.layout,
 			outdir,
 			false,
-			{ server: null, universal: null },
+			{ server: null, universal: null, worker: null },
 			all_pages_have_load
 		);
 
@@ -344,6 +351,7 @@ function update_types(config, routes, route, to_delete = new Set()) {
 
 		if (proxies.server?.modified) to_delete.delete(proxies.server.file_name);
 		if (proxies.universal?.modified) to_delete.delete(proxies.universal.file_name);
+		if (proxies.worker?.modified) to_delete.delete(proxies.worker.file_name);
 
 		exports.push(
 			'export type LayoutProps = { params: LayoutParams; data: LayoutData; children: import("svelte").Snippet }'
@@ -446,6 +454,28 @@ function process_node(node, outdir, is_page, proxies, all_pages_have_load = true
 	}
 	exports.push(`export type ${prefix}ServerData = ${server_data};`);
 
+	if (is_page && node.worker) {
+		const basename = path.basename(node.worker);
+		const proxy = proxies.worker;
+		if (proxy?.modified) {
+			fs.writeFileSync(`${outdir}/proxy${basename}`, proxy.code);
+		}
+
+		const parent_type = `${prefix}ServerParentData`;
+		if (!node.server) {
+			declarations.push(`type ${parent_type} = ${get_parent_type(node, 'LayoutServerData')};`);
+		}
+		const output_data_shape =
+			node.universal || (!is_page && all_pages_have_load)
+				? 'Partial<App.PageData> & Record<string, any> | void'
+				: `OutputDataShape<${parent_type}>`;
+
+		exports.push(
+			`export type ${prefix}WorkerLoad<OutputData extends ${output_data_shape} = ${output_data_shape}> = Kit.WorkerLoad<${params}, ${parent_type}, OutputData, ${route_id}>;`
+		);
+		exports.push(`export type ${prefix}WorkerLoadEvent = Parameters<${prefix}WorkerLoad>[0];`);
+	}
+
 	const parent_type = `${prefix}ParentData`;
 	declarations.push(`type ${parent_type} = ${get_parent_type(node, 'LayoutData')};`);
 
@@ -523,6 +553,10 @@ function ensureProxies(node, proxies) {
 
 	if (node.universal && !proxies.universal) {
 		proxies.universal = createProxy(node.universal, false);
+	}
+
+	if (node.worker && !proxies.worker) {
+		proxies.worker = createProxy(node.worker, false);
 	}
 }
 

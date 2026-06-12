@@ -78,6 +78,27 @@ declare module '$service-worker' {
 	 * See [`config.kit.version`](https://svelte.dev/docs/kit/configuration#version). It's useful for generating unique cache names inside your service worker, so that a later deployment of your app can invalidate old caches.
 	 */
 	export const version: string;
+	/**
+	 * Options for resolving a service worker fetch event with SvelteKit's route-aware data fallback handling.
+	 */
+	export interface ResolveOptions {
+		/**
+		 * The fallback strategy. `network-first` fetches from the server and runs a matching
+		 * `+page.worker.js` load only if that request fails. `worker-first` runs a matching
+		 * `+page.worker.js` load before fetching from the server, and falls back to the
+		 * server if no worker route matches.
+		 */
+		strategy?: 'network-first' | 'worker-first';
+	}
+	/**
+	 * Resolve a service worker fetch event with SvelteKit's route-aware data fallback handling.
+	 * The resolver tries the network first, then runs a matching `+page.worker.js` load function
+	 * for failed SvelteKit data requests.
+	 */
+	export function resolve(
+		event: FetchEvent | { request: Request } | Request,
+		options?: ResolveOptions
+	): Promise<Response>;
 }
 
 /**

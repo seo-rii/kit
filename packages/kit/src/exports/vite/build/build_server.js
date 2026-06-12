@@ -172,6 +172,14 @@ export function build_server_nodes(
 			exports.push(`export const server_id = ${s(node.server)};`);
 		}
 
+		if (node.worker) {
+			imports.push(
+				`import * as worker from '../${resolve_symlinks(server_manifest, node.worker).chunk.file}';`
+			);
+			exports.push('export { worker };');
+			exports.push(`export const worker_id = ${s(node.worker)};`);
+		}
+
 		if ((node.universal || node.component) && kit.output.bundleStrategy === 'split') {
 			/** @type {AssetDependencies | undefined} */
 			let component;

@@ -2,6 +2,7 @@ import { SvelteComponent } from 'svelte';
 import {
 	Config,
 	ServerLoad,
+	WorkerLoad,
 	Handle,
 	HandleServerError,
 	KitConfig,
@@ -223,6 +224,8 @@ export interface PageNode {
 	universal?: string;
 	/** The `+page/layout.server.js/ts`. */
 	server?: string;
+	/** The `+page.worker.js/ts`. */
+	worker?: string;
 	parent_id?: string;
 	parent?: PageNode;
 	/** Filled with the pages that reference this layout (if this is a layout). */
@@ -467,6 +470,10 @@ export interface ServerNode {
 	entries?: PrerenderEntryGenerator;
 }
 
+export interface WorkerNode {
+	load?: WorkerLoad;
+}
+
 export interface SSRNode {
 	/** index into the `nodes` array in the generated `client/app.js`. */
 	index: number;
@@ -479,6 +486,7 @@ export interface SSRNode {
 
 	universal_id?: string;
 	server_id?: string;
+	worker_id?: string;
 
 	/**
 	 * During development, all styles are inlined for the page to avoid FOUC.
@@ -493,6 +501,8 @@ export interface SSRNode {
 	universal?: UniversalNode;
 	/** +page.server.js, +layout.server.js, or +server.js */
 	server?: ServerNode;
+	/** +page.worker.js */
+	worker?: WorkerNode;
 }
 
 export type SSRNodeLoader = () => Promise<SSRNode>;

@@ -239,7 +239,7 @@ function create_routes_and_nodes(cwd, config, fallback) {
 					// check if it is a valid route filename but missing the + prefix
 					const typo =
 						/^(?:(page(?:@(.*))?)|(layout(?:@(.*))?)|(error))$/.test(name) ||
-						/^(?:(server)|(page(?:(@[a-zA-Z0-9_-]*))?(\.server)?)|(layout(?:(@[a-zA-Z0-9_-]*))?(\.server)?))$/.test(
+						/^(?:(server)|(page(?:(@[a-zA-Z0-9_-]*))?(\.server|\.worker)?)|(layout(?:(@[a-zA-Z0-9_-]*))?(\.server)?))$/.test(
 							name
 						);
 					if (typo) {
@@ -263,7 +263,7 @@ function create_routes_and_nodes(cwd, config, fallback) {
 
 					const valid =
 						/^\+(?:(page(?:@(.*))?)|(layout(?:@(.*))?)|(error))$/.test(name) ||
-						/^\+(?:(server)|(page(?:(@[a-zA-Z0-9_-]*))?(\.server)?)|(layout(?:(@[a-zA-Z0-9_-]*))?(\.server)?))$/.test(
+						/^\+(?:(server)|(page(?:(@[a-zA-Z0-9_-]*))?(\.server|\.worker)?)|(layout(?:(@[a-zA-Z0-9_-]*))?(\.server)?))$/.test(
 							name
 						);
 
@@ -546,6 +546,14 @@ function analyze(project_relative, file, component_extensions, module_extensions
 	const module_extension = module_extensions.find((ext) => file.endsWith(ext));
 	if (module_extension) {
 		const name = file.slice(0, -module_extension.length);
+		if (name === '+page.worker') {
+			return {
+				kind: 'worker',
+				is_page: true,
+				is_layout: false
+			};
+		}
+
 		const pattern =
 			/^\+(?:(server)|(page(?:(@[a-zA-Z0-9_-]*))?(\.server)?)|(layout(?:(@[a-zA-Z0-9_-]*))?(\.server)?))$/;
 		const match = pattern.exec(name);

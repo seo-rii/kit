@@ -190,6 +190,7 @@ export async function dev(vite, vite_config, svelte_config, get_remotes) {
 						result.index = index;
 						result.universal_id = node.universal;
 						result.server_id = node.server;
+						result.worker_id = node.worker;
 
 						// these are unused in dev, but it's easier to include them
 						result.imports = [];
@@ -225,6 +226,11 @@ export async function dev(vite, vite_config, svelte_config, get_remotes) {
 						if (node.server) {
 							const { module } = await resolve(node.server);
 							result.server = module;
+						}
+
+						if (node.worker) {
+							const { module } = await resolve(node.worker);
+							result.worker = module;
 						}
 
 						// in dev we inline all styles to avoid FOUC. this gets populated lazily so that

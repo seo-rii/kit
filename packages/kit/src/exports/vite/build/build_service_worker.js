@@ -7,6 +7,7 @@ import { s } from '../../../utils/misc.js';
 import { get_config_aliases, strip_virtual_prefix, get_env, normalize_id } from '../utils.js';
 import { create_static_module, create_sveltekit_env_public } from '../../../core/env.js';
 import { env_static_public, service_worker } from '../module_ids.js';
+import { create_service_worker_resolver } from '../service_worker_resolver.js';
 
 // @ts-ignore `vite.rolldownVersion` only exists in `rolldown-vite`
 const is_rolldown = !!vite.rolldownVersion;
@@ -74,6 +75,8 @@ export async function build_service_worker(
 		];
 
 		export const version = ${s(kit.version.name)};
+
+		${create_service_worker_resolver(manifest_data)}
 	`;
 
 	const env = get_env(kit.env, vite_config.mode);

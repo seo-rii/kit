@@ -26,6 +26,7 @@ import { load_svelte_config, process_config, split_config } from '../../core/con
 import { generate_manifest } from '../../core/generate_manifest/index.js';
 import { build_server_nodes } from './build/build_server.js';
 import { build_service_worker } from './build/build_service_worker.js';
+import { create_service_worker_resolver } from './service_worker_resolver.js';
 import { find_deps, resolve_symlinks } from './build/utils.js';
 import { dev } from './dev/index.js';
 import { preview } from './preview/index.js';
@@ -642,7 +643,8 @@ async function kit({ svelte_config }) {
 					);
 
 				case service_worker:
-					return create_service_worker_module(svelte_config);
+					manifest_data ??= sync.all(svelte_config, vite_config_env.mode).manifest_data;
+					return create_service_worker_module(svelte_config, manifest_data);
 
 				case sveltekit_env:
 					return create_sveltekit_env(explicit_env_config, env.all, explicit_env_entry);
@@ -748,6 +750,7 @@ async function kit({ svelte_config }) {
 				for (const node of manifest_data.nodes) {
 					if (node.component) entrypoints.add(node.component);
 					if (node.universal) entrypoints.add(node.universal);
+					if (node.worker) entrypoints.add(node.worker);
 				}
 
 				if (manifest_data.hooks.client) entrypoints.add(manifest_data.hooks.client);
@@ -1006,7 +1009,7 @@ async function kit({ svelte_config }) {
 
 						// ...and every component used by pages...
 						manifest_data.nodes.forEach((node) => {
-							for (const file of [node.component, node.universal, node.server]) {
+							for (const file of [node.component, node.universal, node.server, node.worker]) {
 								if (file) {
 									const resolved = path.resolve(file);
 									const relative = decodeURIComponent(path.relative(kit.files.routes, resolved));
@@ -1699,8 +1702,9 @@ function find_overridden_config(config, resolved_config, enforced_config, path, 
 
 /**
  * @param {import('types').ValidatedConfig} config
+ * @param {import('types').ManifestData} manifest_data
  */
-const create_service_worker_module = (config) => dedent`
+const create_service_worker_module = (config, manifest_data) => dedent`
 	if (typeof self === 'undefined' || self instanceof ServiceWorkerGlobalScope === false) {
 		throw new Error('This module can only be imported inside a service worker');
 	}
@@ -1715,4 +1719,6 @@ const create_service_worker_module = (config) => dedent`
 	];
 	export const prerendered = [];
 	export const version = ${s(config.kit.version.name)};
+
+	${create_service_worker_resolver(manifest_data)}
 `;
