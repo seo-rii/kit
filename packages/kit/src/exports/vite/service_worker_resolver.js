@@ -92,19 +92,29 @@ export function create_service_worker_resolver(manifest_data) {
 			const strategy = options.strategy ?? 'network-first';
 
 			if (strategy === 'worker-first') {
-				const response = await resolve_worker_data(request);
+				const response = await resolve_worker_response(request);
 				if (response) return response;
 
 				return fetch(request);
 			}
 
+			const fallback_request = request.method === 'POST' ? request.clone() : request;
+
 			try {
 				return await fetch(request);
 			} catch (error) {
-				const response = await resolve_worker_data(request);
+				const response = await resolve_worker_response(fallback_request);
 				if (response) return response;
 				throw error;
 			}
+		}
+
+		async function resolve_worker_response(request) {
+			if (is_action_json_request(request)) {
+				return resolve_worker_action(request);
+			}
+
+			return resolve_worker_data(request);
 		}
 
 		async function resolve_worker_data(request) {
@@ -189,6 +199,56 @@ export function create_service_worker_resolver(manifest_data) {
 			});
 		}
 
+		async function resolve_worker_action(request) {
+			const request_url = new URL(request.url);
+			const page_pathname = decode_pathname(strip_base(request_url.pathname));
+			const route_match = find_worker_route(page_pathname);
+			if (!route_match) return null;
+
+			const node = route_match.route.nodes[route_match.route.nodes.length - 1];
+			const actions = node?.worker?.actions;
+			if (!actions) return null;
+
+			const action_name = get_action_name(request_url);
+			const action = actions[action_name];
+			if (!action) {
+				return action_response({
+					type: 'error',
+					status: 404,
+					error: { message: \`No worker action with name '\${action_name}' found\` }
+				});
+			}
+
+			if (!is_form_content_type(request)) {
+				return action_response({
+					type: 'error',
+					status: 415,
+					error: {
+						message: \`Form actions expect form-encoded data - received \${request.headers.get('content-type')}\`
+					}
+				});
+			}
+
+			const server_request = request.clone();
+			const page_url = new URL(request.url);
+
+			try {
+				return action_response(
+					await action({
+						request,
+						url: page_url,
+						route: { id: route_match.route.id },
+						params: route_match.params,
+						network: get_network_state(),
+						action: action_name,
+						server: (options) => fetch_with_options(server_request.clone(), options)
+					})
+				);
+			} catch (error) {
+				return action_response(normalize_action_error(error));
+			}
+		}
+
 		function get_required_workers(nodes, invalidated) {
 			const required = Array.from({ length: nodes.length }, (_, i) => invalidated[i]);
 			let descendant_worker_required = false;
@@ -205,6 +265,32 @@ export function create_service_worker_resolver(manifest_data) {
 			}
 
 			return required;
+		}
+
+		function is_action_json_request(request) {
+			return request.method === 'POST' && request.headers.get('x-sveltekit-action') === 'true';
+		}
+
+		function get_action_name(url) {
+			let name = 'default';
+
+			for (const param of url.searchParams) {
+				if (param[0].startsWith('/')) {
+					name = param[0].slice(1);
+					break;
+				}
+			}
+
+			return name;
+		}
+
+		function is_form_content_type(request) {
+			const type = request.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase();
+			return (
+				type === 'application/x-www-form-urlencoded' ||
+				type === 'multipart/form-data' ||
+				type === 'text/plain'
+			);
 		}
 
 		function find_worker_route(pathname) {
@@ -377,6 +463,130 @@ export function create_service_worker_resolver(manifest_data) {
 				if (!node || node.type === 'skip') return JSON.stringify(node);
 				return '{"type":"data","data":' + devalue.stringify(node.data) + ',"uses":' + JSON.stringify(node.uses) + '}';
 			}).join(',') + ']}\\n';
+		}
+
+		function action_response(result) {
+			const normalized = normalize_action_result(result);
+			const body = serialize_action_result(normalized);
+
+			return new Response(body + '\\n', {
+				status: normalized.type === 'error' ? normalized.status : 200,
+				headers: {
+					'content-type': 'application/json',
+					'cache-control': 'private, no-store',
+					'x-sveltekit-worker': '1'
+				}
+			});
+		}
+
+		function normalize_action_result(result) {
+			if (is_action_result(result)) {
+				if (result.type === 'error') {
+					return {
+						type: 'error',
+						status: is_error_status(result.status) ? result.status : 500,
+						error: result.error
+					};
+				}
+
+				return result;
+			}
+
+			if (is_action_failure(result)) {
+				return {
+					type: 'failure',
+					status: result.status,
+					data: result.data
+				};
+			}
+
+			return {
+				type: 'success',
+				status: result ? 200 : 204,
+				data: result
+			};
+		}
+
+		function normalize_action_error(error) {
+			if (is_redirect(error)) {
+				return {
+					type: 'redirect',
+					status: error.status,
+					location: String(error.location)
+				};
+			}
+
+			return {
+				type: 'error',
+				status: is_error_status(error?.status) ? error.status : 500,
+				error: serialize_error(error)
+			};
+		}
+
+		function serialize_action_result(result) {
+			if (result.type === 'success' || result.type === 'failure') {
+				return JSON.stringify({
+					type: result.type,
+					status: result.status,
+					data: devalue.stringify(result.data)
+				});
+			}
+
+			if (result.type === 'redirect') {
+				return JSON.stringify({
+					type: 'redirect',
+					status: result.status,
+					location: String(result.location)
+				});
+			}
+
+			return JSON.stringify({
+				type: 'error',
+				error: serialize_error(result.error)
+			});
+		}
+
+		function is_action_result(result) {
+			if (!result || typeof result !== 'object') return false;
+			if (result.type !== 'success' && result.type !== 'failure' && result.type !== 'redirect' && result.type !== 'error') return false;
+			if (result.type === 'error') return true;
+			return typeof result.status === 'number';
+		}
+
+		function is_action_failure(result) {
+			return (
+				result &&
+				typeof result === 'object' &&
+				!('type' in result) &&
+				is_error_status(result.status) &&
+				'data' in result
+			);
+		}
+
+		function is_redirect(error) {
+			return (
+				error &&
+				typeof error === 'object' &&
+				error.status >= 300 &&
+				error.status <= 308 &&
+				'location' in error
+			);
+		}
+
+		function is_error_status(status) {
+			return typeof status === 'number' && status >= 400 && status <= 599;
+		}
+
+		function serialize_error(error) {
+			if (error instanceof Error) {
+				return { message: error.message };
+			}
+
+			if (error && typeof error === 'object' && 'body' in error) {
+				return error.body;
+			}
+
+			return error ?? { message: 'Internal Error' };
 		}
 
 		function parse_invalidated(value, length) {

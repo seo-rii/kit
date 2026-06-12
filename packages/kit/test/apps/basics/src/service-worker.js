@@ -23,10 +23,7 @@ self.addEventListener('fetch', (event) => {
 	// @ts-expect-error
 	const { request } = event;
 
-	if (request.method !== 'GET' || request.headers.has('range')) return;
-
 	const url = new URL(request.url);
-	const cached = caches.match(request);
 
 	if (
 		url.pathname.endsWith('/worker-fallback/target/__data.json') ||
@@ -36,6 +33,10 @@ self.addEventListener('fetch', (event) => {
 		event.respondWith(resolve(event, { strategy: 'worker-first' }));
 		return;
 	}
+
+	if (request.method !== 'GET' || request.headers.has('range')) return;
+
+	const cached = caches.match(request);
 
 	if (url.origin === location.origin && build.includes(url.pathname)) {
 		// always return build files from cache

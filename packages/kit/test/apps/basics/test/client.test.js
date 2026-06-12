@@ -1,5 +1,6 @@
 import process from 'node:process';
 import { expect } from '@playwright/test';
+import * as devalue from 'devalue';
 import { test } from '../../../utils.js';
 
 /** @typedef {import('@playwright/test').Response} Response */
@@ -103,6 +104,36 @@ test.describe('service worker data fallback', () => {
 
 		expect(matcher).toBeDefined();
 		expect(matcher?.nodes.find((node) => node?.type === 'data')?.data).toContain('slug');
+
+		const action = await page.evaluate(async () => {
+			const response = await fetch('/worker-fallback/target?/submit', {
+				method: 'POST',
+				headers: {
+					accept: 'application/json',
+					'content-type': 'application/x-www-form-urlencoded',
+					'x-sveltekit-action': 'true',
+					'x-test-worker-fallback': '1'
+				},
+				body: new URLSearchParams({ message: 'offline action' })
+			});
+
+			return {
+				status: response.status,
+				worker: response.headers.get('x-sveltekit-worker'),
+				body: await response.json()
+			};
+		});
+
+		expect(action.status).toBe(200);
+		expect(action.worker).toBe('1');
+		expect(action.body.type).toBe('failure');
+		expect(action.body.status).toBe(422);
+		expect(devalue.parse(action.body.data)).toEqual({
+			action: 'submit',
+			message: 'offline action',
+			network: 'online',
+			route: '/worker-fallback/target'
+		});
 	});
 });
 

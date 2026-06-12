@@ -132,6 +132,11 @@ self.addEventListener('install', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
+	if (event.request.method === 'POST' && event.request.headers.get('x-sveltekit-action') === 'true') {
+		event.respondWith(resolve(event));
+		return;
+	}
+
 	if (event.request.method !== 'GET') return;
 
 	event.respondWith(
@@ -170,9 +175,37 @@ export async function load({ network, parent, route }) {
 }
 ```
 
-`resolve(event)` is network-first by default. It only runs matching worker loads for SvelteKit data requests after `fetch(event.request)` fails. You can use `resolve(event, { strategy: 'worker-first' })` if your service worker already knows it should prefer fallback data, for example when `navigator.onLine === false`.
+Worker page modules can also provide fallback responses for enhanced form actions:
 
-Worker data replaces the matching layout or page server data for that request. If an invalidated server layout or page does not have a corresponding worker module, the resolver leaves the original network failure in place instead of returning partial route data. `server()` retries the original SvelteKit data request and returns the raw `Response`; it is intended for advanced handling, not for returning `await response.json()` directly from a worker load. This proof-of-concept does not handle action responses, custom transport hooks, trailing-slash normalization data or streaming server data yet.
+```js
+/// file: src/routes/products/+page.worker.js
+/** @type {import('./$types').PageWorkerActions} */
+export const actions = {
+	async checkout({ network, request }) {
+		const form = await request.formData();
+
+		if (network.status === 'offline') {
+			return {
+				type: 'failure',
+				status: 503,
+				data: {
+					offline: true,
+					sku: form.get('sku')
+				}
+			};
+		}
+
+		return {
+			queued: true,
+			sku: form.get('sku')
+		};
+	}
+};
+```
+
+`resolve(event)` is network-first by default. It only runs matching worker loads or actions after `fetch(event.request)` fails. You can use `resolve(event, { strategy: 'worker-first' })` if your service worker already knows it should prefer fallback data, for example when `navigator.onLine === false`.
+
+Worker data replaces the matching layout or page server data for that request. If an invalidated server layout or page does not have a corresponding worker module, the resolver leaves the original network failure in place instead of returning partial route data. `server()` retries the original SvelteKit data or enhanced action request and returns the raw `Response`; it is intended for advanced handling, not for returning `await response.json()` directly from a worker load or action. Worker actions can return an `ActionResult` directly, or return a plain object for a successful action result. This proof-of-concept does not handle custom transport hooks, trailing-slash normalization data or streaming server data yet.
 
 ## Manual registration
 

@@ -479,6 +479,14 @@ function process_node(node, outdir, is_page, proxies, all_pages_have_load = true
 			`export type ${prefix}WorkerLoad<OutputData extends ${output_data_shape} = ${output_data_shape}> = Kit.WorkerLoad<${params}, ${parent_type}, OutputData, ${route_id}>;`
 		);
 		exports.push(`export type ${prefix}WorkerLoadEvent = Parameters<${prefix}WorkerLoad>[0];`);
+		if (is_page) {
+			exports.push(
+				`export type ${prefix}WorkerActions = Kit.WorkerActions<${params}, Record<string, any> | void, Record<string, any> | void, ${route_id}>;`
+			);
+			exports.push(
+				`export type ${prefix}WorkerActionEvent = Parameters<${prefix}WorkerActions[string]>[0];`
+			);
+		}
 	}
 
 	const parent_type = `${prefix}ParentData`;
