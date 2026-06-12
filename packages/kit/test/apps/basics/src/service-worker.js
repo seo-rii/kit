@@ -28,7 +28,10 @@ self.addEventListener('fetch', (event) => {
 	const url = new URL(request.url);
 	const cached = caches.match(request);
 
-	if (url.pathname.endsWith('/worker-fallback/target/__data.json')) {
+	if (
+		url.pathname.endsWith('/worker-fallback/target/__data.json') ||
+		request.headers.has('x-test-worker-fallback')
+	) {
 		// @ts-expect-error
 		event.respondWith(resolve(event, { strategy: 'worker-first' }));
 		return;

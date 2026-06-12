@@ -57,6 +57,7 @@ test.describe('service worker data fallback', () => {
 		await expect(page.locator('#stale')).toHaveText('true');
 		await expect(page.locator('#network')).toHaveText('online');
 
+		/** @type {{ invalidated: string, body: { nodes: Array<{ type?: string, data?: any[], uses?: Record<string, any> } | null> } } | undefined} */
 		const partial = await page.evaluate(async () => {
 			for (const invalidated of ['01', '001', '0001', '00001']) {
 				const response = await fetch(
@@ -64,18 +65,44 @@ test.describe('service worker data fallback', () => {
 				);
 				const text = await response.text();
 				if (response.headers.get('x-sveltekit-worker') === '1' && text.includes('layoutSeen')) {
-					return { invalidated, text };
+					return { invalidated, body: JSON.parse(text) };
 				}
 			}
 		});
 
 		expect(partial).toBeDefined();
-		expect(partial?.text).toContain('layout-worker');
-		expect(partial?.text).toContain('partial');
-		expect(partial?.text).toContain('"parent":1');
-		expect(partial?.text).toContain('"route":1');
-		expect(partial?.text).toContain('"url":1');
-		expect(partial?.text).toContain('"search_params":["tracked"]');
+		expect(partial?.body.nodes.some((node) => node?.type === 'skip')).toBe(true);
+
+		const page_node = partial?.body.nodes.find((node) => {
+			return node?.type === 'data' && JSON.stringify(node.data).includes('layoutSeen');
+		});
+
+		expect(page_node?.data).toContain('layout-worker');
+		expect(page_node?.data).toContain('partial');
+		expect(page_node?.uses).toEqual({
+			parent: 1,
+			route: 1,
+			search_params: ['tracked'],
+			url: 1
+		});
+
+		/** @type {{ nodes: Array<{ type?: string, data?: any[] } | null> } | undefined} */
+		const matcher = await page.evaluate(async () => {
+			for (const invalidated of ['01', '001', '0001', '00001']) {
+				const response = await fetch(
+					`/worker-fallback/matched/abc/__data.json?x-sveltekit-invalidated=${invalidated}`,
+					{
+						headers: { 'x-test-worker-fallback': '1' }
+					}
+				);
+				if (response.headers.get('x-sveltekit-worker') === '1') {
+					return response.json();
+				}
+			}
+		});
+
+		expect(matcher).toBeDefined();
+		expect(matcher?.nodes.find((node) => node?.type === 'data')?.data).toContain('slug');
 	});
 });
 

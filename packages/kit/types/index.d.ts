@@ -2855,10 +2855,6 @@ declare module '@sveltejs/kit' {
 		entries?: PrerenderEntryGenerator;
 	}
 
-	interface WorkerNode {
-		load?: WorkerLoad;
-	}
-
 	interface SSRNode {
 		/** index into the `nodes` array in the generated `client/app.js`. */
 		index: number;
@@ -2871,7 +2867,6 @@ declare module '@sveltejs/kit' {
 
 		universal_id?: string;
 		server_id?: string;
-		worker_id?: string;
 
 		/**
 		 * During development, all styles are inlined for the page to avoid FOUC.
@@ -2886,8 +2881,6 @@ declare module '@sveltejs/kit' {
 		universal?: UniversalNode;
 		/** +page.server.js, +layout.server.js, or +server.js */
 		server?: ServerNode;
-		/** +page.worker.js or +layout.worker.js */
-		worker?: WorkerNode;
 	}
 
 	type SSRNodeLoader = () => Promise<SSRNode>;

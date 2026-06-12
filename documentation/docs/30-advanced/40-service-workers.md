@@ -158,12 +158,7 @@ export async function load({ network }) {
 ```js
 /// file: src/routes/products/+page.worker.js
 /** @type {import('./$types').PageWorkerLoad} */
-export async function load({ network, parent, route, server }) {
-	if (network.status === 'online') {
-		const response = await server({ timeout: 1000 });
-		if (response.ok) return response.json();
-	}
-
+export async function load({ network, parent, route }) {
 	const { categories } = await parent();
 
 	return {
@@ -177,7 +172,7 @@ export async function load({ network, parent, route, server }) {
 
 `resolve(event)` is network-first by default. It only runs matching worker loads for SvelteKit data requests after `fetch(event.request)` fails. You can use `resolve(event, { strategy: 'worker-first' })` if your service worker already knows it should prefer fallback data, for example when `navigator.onLine === false`.
 
-Worker data replaces the matching layout or page server data for that request. If an invalidated server layout or page does not have a corresponding worker module, the resolver leaves the original network failure in place instead of returning partial route data. This proof-of-concept does not handle action responses, custom transport hooks or streaming server data yet.
+Worker data replaces the matching layout or page server data for that request. If an invalidated server layout or page does not have a corresponding worker module, the resolver leaves the original network failure in place instead of returning partial route data. `server()` retries the original SvelteKit data request and returns the raw `Response`; it is intended for advanced handling, not for returning `await response.json()` directly from a worker load. This proof-of-concept does not handle action responses, custom transport hooks, trailing-slash normalization data or streaming server data yet.
 
 ## Manual registration
 

@@ -1009,7 +1009,7 @@ async function kit({ svelte_config }) {
 
 						// ...and every component used by pages...
 						manifest_data.nodes.forEach((node) => {
-							for (const file of [node.component, node.universal, node.server, node.worker]) {
+							for (const file of [node.component, node.universal, node.server]) {
 								if (file) {
 									const resolved = path.resolve(file);
 									const relative = decodeURIComponent(path.relative(kit.files.routes, resolved));
@@ -1709,7 +1709,7 @@ const create_service_worker_module = (config, manifest_data) => dedent`
 		throw new Error('This module can only be imported inside a service worker');
 	}
 
-	export const base = location.pathname.split('/').slice(0, -1).join('/');
+		export const base = location.pathname.split('/').slice(0, -1).join('/');
 	export const build = [];
 	export const files = [
 		${create_assets(config)

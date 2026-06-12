@@ -20,6 +20,14 @@ export function create_service_worker_resolver(manifest_data) {
 	const imports = [];
 	/** @type {Map<string, string>} */
 	const worker_imports = new Map();
+	/** @type {Map<string, string>} */
+	const matcher_imports = new Map();
+
+	for (const [key, file] of Object.entries(manifest_data.matchers)) {
+		const name = `matcher_${matcher_imports.size}`;
+		matcher_imports.set(key, name);
+		imports.push(`import { match as ${name} } from ${s(`/${file}`)};`);
+	}
 
 	const route_data = routes.map((route) => {
 		const page = /** @type {NonNullable<import('types').RouteData['page']>} */ (route.page);
@@ -48,7 +56,20 @@ export function create_service_worker_resolver(manifest_data) {
 			{
 				id: ${s(route.id)},
 				pattern: ${route.pattern},
-				params: ${s(route.params)},
+				params: [${route.params
+					.map(
+						(param) =>
+							dedent`
+							{
+								name: ${s(param.name)},
+								matcher: ${param.matcher ? (matcher_imports.get(param.matcher) ?? 'null') : 'null'},
+								optional: ${param.optional ? 'true' : 'false'},
+								rest: ${param.rest ? 'true' : 'false'},
+								chained: ${param.chained ? 'true' : 'false'}
+							}
+						`
+					)
+					.join(', ')}],
 				nodes: [${nodes.join(', ')}]
 			}
 		`;
@@ -90,9 +111,12 @@ export function create_service_worker_resolver(manifest_data) {
 			if (request.method !== 'GET') return null;
 
 			const request_url = new URL(request.url);
-			const pathname = strip_base(request_url.pathname);
-			const page_pathname = remove_data_suffix(pathname);
+			const pathname = decode_pathname(strip_base(request_url.pathname));
+			let page_pathname = remove_data_suffix(pathname);
 			if (!page_pathname) return null;
+			if (request_url.searchParams.get('x-sveltekit-trailing-slash') === '1' && !page_pathname.endsWith('/')) {
+				page_pathname += '/';
+			}
 
 			const route_match = find_worker_route(page_pathname);
 			if (!route_match) return null;
@@ -117,9 +141,9 @@ export function create_service_worker_resolver(manifest_data) {
 					continue;
 				}
 
-				if (!node?.worker) {
-					if (node?.server) return null;
-					nodes[i] = null;
+				if (!node?.worker?.load) {
+					if (invalidated[i] && node?.server) return null;
+					nodes[i] = invalidated[i] ? null : { type: 'skip' };
 					continue;
 				}
 
@@ -139,11 +163,15 @@ export function create_service_worker_resolver(manifest_data) {
 					server: (options) => fetch_with_options(request, options)
 				});
 
-				nodes[i] = {
-					type: 'data',
-					data,
-					uses: serialize_uses(uses)
-				};
+				if (!invalidated[i]) {
+					nodes[i] = { type: 'skip' };
+				} else {
+					nodes[i] = {
+						type: 'data',
+						data,
+						uses: serialize_uses(uses)
+					};
+				}
 
 				if (data && typeof data === 'object') {
 					Object.assign(parent_data, data);
@@ -183,10 +211,12 @@ export function create_service_worker_resolver(manifest_data) {
 			for (const route of worker_routes) {
 				const match = route.pattern.exec(pathname);
 				if (!match) continue;
+				const params = exec_params(match, route.params);
+				if (!params) continue;
 
 				return {
 					route,
-					params: exec_params(match, route.params)
+					params: decode_params(params)
 				};
 			}
 		}
@@ -195,13 +225,71 @@ export function create_service_worker_resolver(manifest_data) {
 			const result = {};
 			const values = match.slice(1);
 
+			const values_needing_match = values.filter((value) => value !== undefined);
+			let buffered = 0;
+
 			for (let i = 0; i < params.length; i += 1) {
-				const value = values[i];
-				if (value === undefined) continue;
-				result[params[i].name] = decodeURIComponent(value);
+				const param = params[i];
+				let value = values[i - buffered];
+
+				if (param.chained && param.rest && buffered) {
+					value = values
+						.slice(i - buffered, i + 1)
+						.filter((s) => s)
+						.join('/');
+
+					buffered = 0;
+				}
+
+				if (value === undefined) {
+					if (param.rest) {
+						value = '';
+					} else {
+						continue;
+					}
+				}
+
+				if (!param.matcher || param.matcher(value)) {
+					result[param.name] = value;
+
+					const next_param = params[i + 1];
+					const next_value = values[i + 1];
+					if (next_param && !next_param.rest && next_param.optional && next_value && param.chained) {
+						buffered = 0;
+					}
+
+					if (
+						!next_param &&
+						!next_value &&
+						Object.keys(result).length === values_needing_match.length
+					) {
+						buffered = 0;
+					}
+					continue;
+				}
+
+				if (param.optional && param.chained) {
+					buffered++;
+					continue;
+				}
+
+				return;
 			}
 
+			if (buffered) return;
 			return result;
+		}
+
+		function decode_params(params) {
+			for (const key in params) {
+				params[key] = decodeURIComponent(params[key]);
+			}
+
+			return params;
+		}
+
+		function decode_pathname(pathname) {
+			return pathname.split('%25').map(decodeURI).join('%25');
 		}
 
 		function create_uses() {
