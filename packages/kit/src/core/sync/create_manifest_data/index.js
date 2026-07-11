@@ -279,6 +279,12 @@ function create_routes_and_nodes(cwd, config, fallback) {
 					config.kit.moduleExtensions
 				);
 
+				if (item.kind === 'worker' && !config.kit.experimental.serviceWorkerFallbacks) {
+					throw new Error(
+						`Route worker files require \`config.kit.experimental.serviceWorkerFallbacks\` to be enabled (saw ${project_relative})`
+					);
+				}
+
 				if (config.kit.router.type === 'hash' && item.kind === 'server') {
 					throw new Error(
 						`Cannot use server-only files in an app with \`router.type === 'hash': ${project_relative}`

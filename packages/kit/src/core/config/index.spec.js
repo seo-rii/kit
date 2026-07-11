@@ -82,6 +82,7 @@ const get_defaults = (prefix = '') => ({
 			instrumentation: { server: false },
 			explicitEnvironmentVariables: false,
 			remoteFunctions: false,
+			serviceWorkerFallbacks: false,
 			forkPreloads: false,
 			handleRenderingErrors: false
 		},

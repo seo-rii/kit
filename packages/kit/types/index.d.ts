@@ -490,6 +490,12 @@ declare module '@sveltejs/kit' {
 			remoteFunctions?: boolean;
 
 			/**
+			 * Whether to enable experimental route-aware service worker fallbacks using `+layout.worker.js` and `+page.worker.js` files.
+			 * @default false
+			 */
+			serviceWorkerFallbacks?: boolean;
+
+			/**
 			 * Whether to enable the experimental forked preloading feature using Svelte's fork API.
 			 * @default false
 			 */
@@ -1722,7 +1728,7 @@ declare module '@sveltejs/kit' {
 	> = (event: ServerLoadEvent<Params, ParentData, RouteId>) => MaybePromise<OutputData>;
 
 	/**
-	 * The generic form of `PageWorkerLoad` and `LayoutWorkerLoad`. You should import those from `./$types`.
+	 * The generic form of `PageWorkerLoad` and `LayoutWorkerLoad`. You should import those from `./$worker-types`.
 	 *
 	 * This experimental API lets a service worker provide fallback data for page and layout server
 	 * `load` functions when the network request for SvelteKit data fails.
@@ -1774,10 +1780,6 @@ declare module '@sveltejs/kit' {
 		 * Best-effort connectivity information available to the service worker.
 		 */
 		network: WorkerNetworkState;
-		/**
-		 * The invalidation vector from the SvelteKit data request.
-		 */
-		invalidated: boolean[];
 		/**
 		 * Returns fallback data from parent layouts that was provided by earlier worker loads in the
 		 * current SvelteKit data request.

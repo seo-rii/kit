@@ -29,6 +29,7 @@ const config = {
 
 		experimental: {
 			remoteFunctions: true,
+			serviceWorkerFallbacks: true,
 			tracing: {
 				server: true
 			},

@@ -42,6 +42,7 @@ function simplify_node(node) {
 	if (node.component) simplified.component = node.component;
 	if (node.universal) simplified.universal = node.universal;
 	if (node.server) simplified.server = node.server;
+	if (node.worker) simplified.worker = node.worker;
 	if (node.parent_id !== undefined) simplified.parent_id = node.parent_id;
 
 	return simplified;
@@ -106,6 +107,30 @@ test('creates routes', () => {
 			id: '/blog/[slug]',
 			pattern: '/^/blog/([^/]+?)/?$/',
 			page: { layouts: [0], errors: [1], leaf: 5 }
+		}
+	]);
+});
+
+test('requires the experimental flag for route worker files', () => {
+	expect(() => create('samples/worker-fallback')).toThrow(
+		'Route worker files require `config.kit.experimental.serviceWorkerFallbacks` to be enabled'
+	);
+});
+
+test('creates route worker nodes when the experimental flag is enabled', () => {
+	const { nodes } = create('samples/worker-fallback', {
+		kit: { experimental: { serviceWorkerFallbacks: true } }
+	});
+
+	expect(nodes.map(simplify_node)).toEqual([
+		{
+			component: 'layout.svelte',
+			worker: 'samples/worker-fallback/+layout.worker.js'
+		},
+		default_error,
+		{
+			component: 'samples/worker-fallback/+page.svelte',
+			worker: 'samples/worker-fallback/+page.worker.js'
 		}
 	]);
 });

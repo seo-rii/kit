@@ -141,6 +141,7 @@ export const options = object(
 				}),
 				explicitEnvironmentVariables: boolean(false),
 				remoteFunctions: boolean(false),
+				serviceWorkerFallbacks: boolean(false),
 				forkPreloads: boolean(false),
 				handleRenderingErrors: boolean(false)
 			}),
