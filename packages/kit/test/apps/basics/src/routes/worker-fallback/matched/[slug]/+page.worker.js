@@ -1,4 +1,4 @@
-/** @type {import('./$types').PageWorkerLoad} */
+/** @type {import('./$worker-types').PageWorkerLoad} */
 export function load({ params }) {
 	return {
 		matcher: 'slug',

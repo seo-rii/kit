@@ -40,11 +40,20 @@ function remove_trailing_slashstar(file) {
  */
 export function write_tsconfig(kit, cwd = process.cwd()) {
 	const out = path.join(kit.outDir, 'tsconfig.json');
+	const worker_out = path.join(kit.outDir, 'tsconfig.worker.json');
 
 	const user_config = load_user_tsconfig(cwd);
 	if (user_config) validate_user_config(cwd, out, user_config);
 
 	write_if_changed(out, JSON.stringify(get_tsconfig(kit), null, '\t'));
+	if (kit.experimental.serviceWorkerFallbacks) {
+		write_if_changed(
+			worker_out,
+			JSON.stringify(get_worker_tsconfig(kit, user_config?.file), null, '\t')
+		);
+	} else if (fs.existsSync(worker_out)) {
+		fs.unlinkSync(worker_out);
+	}
 }
 
 /**
@@ -98,6 +107,16 @@ export function get_tsconfig(kit) {
 		exclude.push(config_relative(`${kit.files.serviceWorker}/**/*.d.ts`));
 	}
 
+	if (kit.experimental.serviceWorkerFallbacks) {
+		// Route worker modules use Web Worker lib references. Keep them out of the app's TypeScript
+		// program so that worker-only globals do not leak into pages, layouts and server modules.
+		for (const basename of ['+page.worker', '+layout.worker']) {
+			for (const extension of kit.moduleExtensions) {
+				exclude.push(config_relative(`${kit.files.routes}/**/${basename}${extension}`));
+			}
+		}
+	}
+
 	const config = {
 		compilerOptions: {
 			// generated options
@@ -131,6 +150,40 @@ export function get_tsconfig(kit) {
 	return kit.typescript.config(config) ?? config;
 }
 
+/**
+ * Generates the tsconfig used to typecheck route worker modules separately from the app.
+ * @param {import('types').ValidatedKitConfig} kit
+ * @param {string} [user_config_file]
+ */
+export function get_worker_tsconfig(kit, user_config_file) {
+	/** @param {string} file */
+	const config_relative = (file) => posixify(path.relative(kit.outDir, file));
+
+	const include = [
+		'ambient.d.ts',
+		'env.d.ts',
+		'non-ambient.d.ts',
+		'./types/**/$worker-types.d.ts',
+		config_relative(`${kit.files.src}/**/*.d.ts`)
+	];
+	for (const basename of ['+page.worker', '+layout.worker']) {
+		for (const extension of kit.moduleExtensions) {
+			include.push(config_relative(`${kit.files.routes}/**/${basename}${extension}`));
+		}
+	}
+
+	return {
+		extends: user_config_file ? config_relative(user_config_file) : './tsconfig.json',
+		compilerOptions: {
+			lib: ['esnext', 'WebWorker', 'WebWorker.Iterable'],
+			skipLibCheck: true,
+			types: []
+		},
+		include,
+		exclude: [config_relative('node_modules/**')]
+	};
+}
+
 /** @param {string} cwd */
 function load_user_tsconfig(cwd) {
 	const file = maybe_file(cwd, 'tsconfig.json') || maybe_file(cwd, 'jsconfig.json');
@@ -141,6 +194,7 @@ function load_user_tsconfig(cwd) {
 	const json = fs.readFileSync(file, 'utf-8');
 
 	return {
+		file,
 		kind: path.basename(file),
 		options: (0, eval)(`(${json})`)
 	};
@@ -149,7 +203,7 @@ function load_user_tsconfig(cwd) {
 /**
  * @param {string} cwd
  * @param {string} out
- * @param {{ kind: string, options: any }} config
+ * @param {{ file: string, kind: string, options: any }} config
  */
 function validate_user_config(cwd, out, config) {
 	// we need to check that the user's tsconfig extends the framework config

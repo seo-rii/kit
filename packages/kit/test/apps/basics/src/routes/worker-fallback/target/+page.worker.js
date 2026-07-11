@@ -1,4 +1,4 @@
-/** @type {import('./$types').PageWorkerLoad} */
+/** @type {import('./$worker-types').PageWorkerLoad} */
 export async function load({ network, parent, route, url }) {
 	const data = await parent();
 	const tracked = url.searchParams.get('tracked') ?? 'none';
@@ -14,7 +14,7 @@ export async function load({ network, parent, route, url }) {
 	};
 }
 
-/** @type {import('./$types').PageWorkerActions} */
+/** @type {import('./$worker-types').PageWorkerActions} */
 export const actions = {
 	async submit({ action, network, request, route }) {
 		const form = await request.formData();

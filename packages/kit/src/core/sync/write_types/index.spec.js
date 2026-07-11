@@ -1,5 +1,6 @@
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -18,7 +19,13 @@ const cwd = fileURLToPath(new URL('./test', import.meta.url));
 function run_test(dir) {
 	rimraf(path.join(cwd, dir, '.svelte-kit'));
 
-	const initial = validate_config({});
+	const initial = validate_config({
+		kit: {
+			experimental: {
+				serviceWorkerFallbacks: true
+			}
+		}
+	});
 
 	initial.kit.files.assets = path.resolve(cwd, 'static');
 	initial.kit.files.params = path.resolve(cwd, dir, 'params');
@@ -33,7 +40,7 @@ function run_test(dir) {
 	write_non_ambient(initial.kit, manifest);
 }
 
-test('Creates correct $types', { timeout: 60000 }, () => {
+test('Creates correct $types', { timeout: 120000 }, () => {
 	// To save us from creating a real SvelteKit project for each of the tests,
 	// we first run the type generation directly for each test case, and then
 	// call `tsc` to check that the generated types are valid.
@@ -53,6 +60,44 @@ test('Creates correct $types', { timeout: 60000 }, () => {
 			console.error(/** @type {any} */ (e).stdout.toString());
 			throw new Error(`${dir} type tests failed`, { cause: e });
 		}
+	}
+});
+
+test('Removes $worker-types after the last worker module is removed', () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kit-worker-types-'));
+	const worker = path.join(dir, '+page.worker.js');
+
+	try {
+		fs.writeFileSync(worker, 'export const actions = { default: () => ({ offline: true }) };');
+		const initial = validate_config({
+			kit: {
+				experimental: {
+					serviceWorkerFallbacks: true
+				}
+			}
+		});
+		initial.kit.files.assets = path.join(dir, 'static');
+		initial.kit.files.params = path.join(dir, 'params');
+		initial.kit.files.routes = dir;
+		initial.kit.outDir = path.join(dir, '.svelte-kit');
+
+		let manifest = create_manifest_data({
+			config: /** @type {import('types').ValidatedConfig} */ (initial)
+		});
+		write_all_types(initial, manifest);
+
+		const routes_dir = path.relative('.', dir).replace(/\.\.\//g, '');
+		const generated = path.join(initial.kit.outDir, 'types', routes_dir, '$worker-types.d.ts');
+		expect(fs.existsSync(generated)).toBe(true);
+
+		fs.unlinkSync(worker);
+		manifest = create_manifest_data({
+			config: /** @type {import('types').ValidatedConfig} */ (initial)
+		});
+		write_all_types(initial, manifest);
+		expect(fs.existsSync(generated)).toBe(false);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
 	}
 });
 

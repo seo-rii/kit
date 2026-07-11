@@ -1,4 +1,4 @@
-/** @type {import('./$types').LayoutWorkerLoad} */
+/** @type {import('./$worker-types').LayoutWorkerLoad} */
 export function load({ network }) {
 	return {
 		layoutSource: 'layout-worker',
