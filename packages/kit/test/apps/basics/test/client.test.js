@@ -34,19 +34,28 @@ test.describe('Caching', () => {
 });
 
 test.describe('service worker data fallback', () => {
+	test.beforeEach(async ({ page }) => {
+		test.slow();
+		test.skip(!!process.env.DEV, 'service worker build assets are empty in dev mode');
+
+		await page.context().addCookies([
+			{
+				name: 'dev_bypass_waf',
+				value: 'seorii_bypass_token_is_this',
+				domain: 'localhost',
+				path: '/'
+			}
+		]);
+		await page.goto('/worker-fallback/start');
+		await page.evaluate(() => navigator.serviceWorker.ready);
+		await page.reload();
+		expect(await page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
+	});
+
 	test('renders layout and page data from worker modules when the service worker uses worker-first data', async ({
 		app,
 		page
 	}) => {
-		test.skip(!!process.env.DEV, 'service worker build assets are empty in dev mode');
-
-		await page.goto('/worker-fallback/start');
-		await page.evaluate(() => navigator.serviceWorker.ready);
-		await page.reload();
-		await page.waitForLoadState('networkidle');
-		await page.waitForSelector('body.started');
-		expect(await page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
-
 		await app.goto('/worker-fallback/target');
 		await expect(page.locator('h1')).toHaveText('worker data for /worker-fallback/target');
 		await expect(page.locator('#layout-source')).toHaveText('layout-worker');
@@ -172,6 +181,56 @@ test.describe('service worker data fallback', () => {
 			status: 200,
 			message: 'plain action data'
 		});
+
+		const server_action = await page.evaluate(async () => {
+			const response = await fetch('/worker-fallback/target?/serverOnly', {
+				method: 'POST',
+				headers: {
+					accept: 'application/json',
+					'content-type': 'application/x-www-form-urlencoded',
+					'x-sveltekit-action': 'true',
+					'x-test-worker-fallback': '1'
+				},
+				body: new URLSearchParams()
+			});
+
+			return {
+				worker: response.headers.get('x-sveltekit-worker'),
+				body: await response.json()
+			};
+		});
+
+		expect(server_action.worker).toBeNull();
+		expect(server_action.body.type).toBe('success');
+		expect(devalue.parse(server_action.body.data)).toEqual({ source: 'server-action' });
+	});
+
+	test('falls back through the default network-first strategy while offline', async ({
+		app,
+		page
+	}) => {
+		await page.context().setOffline(true);
+
+		try {
+			await app.goto('/worker-fallback/network-first');
+			await expect(page.locator('h1')).toHaveText('network-first-worker');
+			await expect(page.locator('#network')).toHaveText('offline');
+		} finally {
+			await page.context().setOffline(false);
+		}
+	});
+
+	test('applies reroute before resolving an offline worker route', async ({ app, page }) => {
+		await page.context().setOffline(true);
+
+		try {
+			await app.goto('/worker-fallback/reroute-visible');
+			await expect(page).toHaveURL('/worker-fallback/reroute-visible');
+			await expect(page.locator('h1')).toHaveText('rerouted-worker');
+			await expect(page.locator('#route')).toHaveText('/worker-fallback/reroute-target');
+		} finally {
+			await page.context().setOffline(false);
+		}
 	});
 });
 

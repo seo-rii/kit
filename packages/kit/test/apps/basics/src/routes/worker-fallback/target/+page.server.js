@@ -5,3 +5,7 @@ export function load() {
 		stale: false
 	};
 }
+
+export const actions = {
+	serverOnly: () => ({ source: 'server-action' })
+};
