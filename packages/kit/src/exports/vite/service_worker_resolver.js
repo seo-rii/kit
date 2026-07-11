@@ -22,6 +22,10 @@ export function create_service_worker_resolver(manifest_data) {
 	const worker_imports = new Map();
 	/** @type {Map<string, string>} */
 	const matcher_imports = new Map();
+	const hooks_name = manifest_data.hooks.universal && routes.length > 0 ? 'universal_hooks' : null;
+	if (hooks_name) {
+		imports.push(`import * as ${hooks_name} from ${s(`/${manifest_data.hooks.universal}`)};`);
+	}
 
 	for (const route of routes) {
 		for (const param of route.params) {
@@ -51,10 +55,11 @@ export function create_service_worker_resolver(manifest_data) {
 			}
 
 			return dedent`
-				{
-					server: ${node.server ? 'true' : 'false'},
-					worker: ${worker}
-				}
+					{
+						server: ${node.server ? 'true' : 'false'},
+						slash: ${node.page_options?.trailingSlash ? s(node.page_options.trailingSlash) : 'null'},
+						worker: ${worker}
+					}
 			`;
 		});
 
@@ -92,6 +97,10 @@ export function create_service_worker_resolver(manifest_data) {
 		const HTML_DATA_SUFFIX = ${s(HTML_DATA_SUFFIX)};
 
 		${worker_routes}
+		const worker_hooks = ${hooks_name ?? 'null'};
+		const transport_reducers = Object.fromEntries(
+			Object.entries(worker_hooks?.transport ?? {}).map(([key, value]) => [key, value.encode])
+		);
 
 		export async function resolve(event, options = {}) {
 			const request = event instanceof Request ? event : event.request;
@@ -134,15 +143,15 @@ export function create_service_worker_resolver(manifest_data) {
 				page_pathname += '/';
 			}
 
-			const route_match = find_worker_route(page_pathname);
-			if (!route_match) return null;
-
-			const invalidated = parse_invalidated(request_url.searchParams.get('x-sveltekit-invalidated'), route_match.route.nodes.length);
-
 			const page_url = new URL(request.url);
 			page_url.pathname = add_base(page_pathname);
 			page_url.searchParams.delete('x-sveltekit-invalidated');
 			page_url.searchParams.delete('x-sveltekit-trailing-slash');
+
+			const route_match = await match_worker_route(page_url);
+			if (!route_match) return null;
+
+			const invalidated = parse_invalidated(request_url.searchParams.get('x-sveltekit-invalidated'), route_match.route.nodes.length);
 
 			const nodes = [];
 			const parent_data = {};
@@ -165,19 +174,34 @@ export function create_service_worker_resolver(manifest_data) {
 
 				handled = true;
 				const uses = create_uses();
-				const data = await node.worker.load({
-					request,
-					url: make_trackable_url(page_url, uses),
-					route: track_route({ id: route_match.route.id }, uses),
-					params: track_params(route_match.params, uses),
-					network: get_network_state(),
-					invalidated,
-					parent: async () => {
-						uses.parent = true;
-						return { ...parent_data };
-					},
-					server: (options) => fetch_with_options(request, options)
-				});
+				let data;
+				try {
+					data = await node.worker.load({
+						request,
+						url: make_trackable_url(page_url, uses),
+						route: track_route({ id: route_match.route.id }, uses),
+						params: track_params(route_match.params, uses),
+						network: get_network_state(),
+						parent: async () => {
+							uses.parent = true;
+							return { ...parent_data };
+						},
+						server: (options) => fetch_with_options(request, options)
+					});
+				} catch (error) {
+					if (is_redirect(error)) return redirect_response(error);
+
+					nodes[i] = {
+						type: 'error',
+						error: serialize_error(error)
+					};
+					if (is_error_status(error?.status)) nodes[i].status = error.status;
+					for (let j = i + 1; j < route_match.route.nodes.length; j += 1) {
+						nodes[j] = { type: 'skip' };
+					}
+
+					return data_response(nodes);
+				}
 
 				if (!invalidated[i]) {
 					nodes[i] = { type: 'skip' };
@@ -185,6 +209,7 @@ export function create_service_worker_resolver(manifest_data) {
 					nodes[i] = {
 						type: 'data',
 						data,
+						slash: node.slash,
 						uses: serialize_uses(uses)
 					};
 				}
@@ -201,38 +226,36 @@ export function create_service_worker_resolver(manifest_data) {
 
 		async function resolve_worker_action(request) {
 			const request_url = new URL(request.url);
-			const page_pathname = decode_pathname(strip_base(request_url.pathname));
-			const route_match = find_worker_route(page_pathname);
+			const page_url = new URL(request.url);
+			const route_match = await match_worker_route(page_url);
 			if (!route_match) return null;
 
 			const node = route_match.route.nodes[route_match.route.nodes.length - 1];
 			const actions = node?.worker?.actions;
 			if (!actions) return null;
 
-			const action_name = get_action_name(request_url);
-			const action = actions[action_name];
-			if (!action) {
-				return action_response({
-					type: 'error',
-					status: 404,
-					error: { message: \`No worker action with name '\${action_name}' found\` }
-				});
-			}
-
-			if (!is_form_content_type(request)) {
-				return action_response({
-					type: 'error',
-					status: 415,
-					error: {
-						message: \`Form actions expect form-encoded data - received \${request.headers.get('content-type')}\`
-					}
-				});
-			}
-
-			const server_request = request.clone();
-			const page_url = new URL(request.url);
-
 			try {
+				if (actions.default && Object.keys(actions).length > 1) {
+					throw new Error(
+						'When using named actions, the default action cannot be used. See the docs for more info'
+					);
+				}
+
+				const action_name = get_action_name(request_url);
+				const action = actions[action_name];
+				if (!action) return null;
+
+				if (!is_form_content_type(request)) {
+					return action_response({
+						type: 'error',
+						status: 415,
+						error: {
+							message: \`Form actions expect form-encoded data - received \${request.headers.get('content-type')}\`
+						}
+					});
+				}
+
+				const server_request = request.clone();
 				return action_response(
 					await action({
 						request,
@@ -277,11 +300,34 @@ export function create_service_worker_resolver(manifest_data) {
 			for (const param of url.searchParams) {
 				if (param[0].startsWith('/')) {
 					name = param[0].slice(1);
+					if (name === 'default') {
+						throw new Error('Cannot use reserved action name "default"');
+					}
 					break;
 				}
 			}
 
 			return name;
+		}
+
+		async function match_worker_route(page_url) {
+			let rerouted = page_url;
+			if (worker_hooks?.reroute) {
+				rerouted =
+					(await worker_hooks.reroute({
+						url: new URL(page_url),
+						fetch: (input, init) =>
+							fetch(input instanceof Request ? input : new URL(input, page_url), init)
+					})) ?? page_url;
+
+				if (typeof rerouted === 'string') {
+					const url = new URL(page_url);
+					url.pathname = rerouted;
+					rerouted = url;
+				}
+			}
+
+			return find_worker_route(decode_pathname(strip_base(rerouted.pathname)));
 		}
 
 		function is_form_content_type(request) {
@@ -496,11 +542,25 @@ export function create_service_worker_resolver(manifest_data) {
 			);
 		}
 
+		function redirect_response(redirect) {
+			return new Response(
+				JSON.stringify({ type: 'redirect', location: String(redirect.location) }) + '\\n',
+				{
+					headers: {
+						'content-type': 'application/json',
+						'cache-control': 'private, no-store',
+						'x-sveltekit-worker': '1'
+					}
+				}
+			);
+		}
+
 		function render_data_response(nodes) {
 			let promise_id = 1;
 			const iterator = create_async_iterator();
 
 			const reducers = {
+				...transport_reducers,
 				Promise: (thing) => {
 					if (typeof thing?.then !== 'function') return;
 
@@ -533,16 +593,19 @@ export function create_service_worker_resolver(manifest_data) {
 
 			const data =
 				'{"type":"data","nodes":[' +
-				nodes
-					.map((node) => {
-						if (!node || node.type === 'skip') return JSON.stringify(node);
-						return (
-							'{"type":"data","data":' +
-							devalue.stringify(node.data, reducers) +
-							',"uses":' +
-							JSON.stringify(node.uses) +
-							'}'
-						);
+					nodes
+						.map((node) => {
+							if (!node || node.type === 'skip' || node.type === 'error') {
+								return JSON.stringify(node);
+							}
+							return (
+								'{"type":"data","data":' +
+								devalue.stringify(node.data, reducers) +
+								',"uses":' +
+								JSON.stringify(node.uses) +
+								(node.slash ? ',"slash":' + JSON.stringify(node.slash) : '') +
+								'}'
+							);
 					})
 					.join(',') +
 				']}\\n';
@@ -654,7 +717,7 @@ export function create_service_worker_resolver(manifest_data) {
 				return JSON.stringify({
 					type: result.type,
 					status: result.status,
-					data: devalue.stringify(result.data)
+					data: devalue.stringify(result.data, transport_reducers)
 				});
 			}
 
@@ -749,17 +812,24 @@ export function create_service_worker_resolver(manifest_data) {
 		}
 
 		function fetch_with_options(request, options = {}) {
-			if (!options.timeout && !options.signal) return fetch(request);
+			const has_timeout = options.timeout !== undefined;
+			if (!has_timeout && !options.signal) return fetch(request);
 
 			const controller = new AbortController();
-			const timeout = options.timeout
+			const timeout = has_timeout
 				? setTimeout(() => controller.abort(), options.timeout)
 				: null;
+			const abort = () => controller.abort(options.signal?.reason);
 
-			options.signal?.addEventListener('abort', () => controller.abort(), { once: true });
+			if (options.signal?.aborted) {
+				abort();
+			} else {
+				options.signal?.addEventListener('abort', abort, { once: true });
+			}
 
 			return fetch(request, { signal: controller.signal }).finally(() => {
-				if (timeout) clearTimeout(timeout);
+				if (timeout !== null) clearTimeout(timeout);
+				options.signal?.removeEventListener('abort', abort);
 			});
 		}
 

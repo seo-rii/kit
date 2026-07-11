@@ -563,11 +563,10 @@ async function kit({ svelte_config }) {
 				return `${out_dir}/generated/client-optimized/app.js`;
 			}
 
-			// If importing from a service-worker, only allow $service-worker & $env/static/public, but none of the other virtual modules.
+			// Service workers can only import the explicitly supported public environment modules.
 			// This check won't catch transitive imports, but it will warn when the import comes from a service-worker directly.
 			// Transitive imports will be caught during the build.
 			// TODO move this logic to plugin_guard
-			// TODO allow $app/env/public
 			if (importer) {
 				const parsed_importer = path.parse(importer);
 
@@ -579,6 +578,7 @@ async function kit({ svelte_config }) {
 					importer_is_service_worker &&
 					id !== '$service-worker' &&
 					id !== '$env/static/public' &&
+					id !== '$app/environment' &&
 					id !== 'virtual:$app/env/public' &&
 					id !== '__sveltekit/env/service-worker'
 				) {
@@ -587,7 +587,7 @@ async function kit({ svelte_config }) {
 							id,
 							normalized_lib,
 							normalized_cwd
-						)} into service-worker code. Only the modules $service-worker, $env/static/public and $app/env/public are available in service workers.`
+						)} into service-worker code. Only the modules $service-worker, $env/static/public, $app/env/public and $app/environment are available in service workers.`
 					);
 				}
 			}

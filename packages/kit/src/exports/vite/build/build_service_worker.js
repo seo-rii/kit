@@ -123,12 +123,21 @@ export async function build_service_worker(
 				);
 			}
 
+			if (id === '\0virtual:app/environment') {
+				return dedent`
+					export const browser = true;
+					export const building = false;
+					export const dev = false;
+					export const version = ${s(kit.version.name)};
+				`;
+			}
+
 			const normalized_cwd = vite.normalizePath(process.cwd());
 			const normalized_lib = vite.normalizePath(kit.files.lib);
 			const relative = normalize_id(id, normalized_lib, normalized_cwd);
 			const stripped = strip_virtual_prefix(relative);
 			throw new Error(
-				`Cannot import ${stripped} into service-worker code. Only the modules $service-worker, $env/static/public and $app/env/public are available in service workers.`
+				`Cannot import ${stripped} into service-worker code. Only the modules $service-worker, $env/static/public, $app/env/public and $app/environment are available in service workers.`
 			);
 		}
 	};
