@@ -14,8 +14,9 @@ Each route directory contains one or more _route files_, which can be identified
 
 We'll introduce these files in a moment in more detail, but here are a few simple rules to help you remember how SvelteKit's routing works:
 
-* All files can run on the server
-* All files run on the client except `+server` files
+* All route files can run on the server except `+page.worker.js` and `+layout.worker.js`
+* All route files run in the browser except `+server.js`, `+page.server.js`, `+layout.server.js`, `+page.worker.js` and `+layout.worker.js`
+* `+page.worker.js` and `+layout.worker.js` run only in the service worker
 * `+layout` and `+error` files apply to subdirectories as well as the directory they live in
 
 ## +page
@@ -143,6 +144,14 @@ During client-side navigation, SvelteKit will load this data from the server, wh
 Like `+page.js`, `+page.server.js` can export [page options](page-options) — `prerender`, `ssr` and `csr`.
 
 A `+page.server.js` file can also export _actions_. If `load` lets you read data from the server, `actions` let you write data _to_ the server using the `<form>` element. To learn how to use them, see the [form actions](form-actions) section.
+
+### +page.worker.js
+
+> [!NOTE] This API is experimental. Enable it with `kit.experimental.serviceWorkerFallbacks` in your [configuration](configuration#experimental).
+
+A `+page.worker.js` file runs only in the service worker. Its `load` function and actions are fallback counterparts to those in `+page.server.js`; they run only when your service worker delegates SvelteKit data requests or enhanced action requests to SvelteKit's worker resolver. They do not run during normal server rendering or as client-side modules in the browser.
+
+Use the generated `PageWorkerLoad` and `PageWorkerActions` types from `./$worker-types`. See [fallback route data](service-workers#Fallback-route-data) for setup and examples.
 
 ## +error
 
@@ -292,6 +301,14 @@ To run your layout's `load` function on the server, move it to `+layout.server.j
 
 Like `+layout.js`, `+layout.server.js` can export [page options](page-options) — `prerender`, `ssr` and `csr`.
 
+### +layout.worker.js
+
+> [!NOTE] This API is experimental. Enable it with `kit.experimental.serviceWorkerFallbacks` in your [configuration](configuration#experimental).
+
+A `+layout.worker.js` file runs only in the service worker. Its `load` function provides fallback data for the corresponding `+layout.server.js` load and can provide parent data to descendant worker loads. It does not replace universal `+layout.js` loads.
+
+Use the generated `LayoutWorkerLoad` type from `./$worker-types`. See [fallback route data](service-workers#Fallback-route-data) for setup and examples.
+
 ## +server
 
 As well as pages, you can define routes with a `+server.js` file (sometimes referred to as an 'API route' or an 'endpoint'), which gives you full control over the response. Your `+server.js` file exports functions corresponding to HTTP verbs like `GET`, `POST`, `PATCH`, `PUT`, `DELETE`, `OPTIONS`, and `HEAD` that take a [`RequestEvent`](@sveltejs-kit#RequestEvent) argument and return a [`Response`](https://developer.mozilla.org/en-US/docs/Web/API/Response) object.
@@ -437,9 +454,9 @@ For example, annotating `let { data } = $props()` with `PageProps` (or `LayoutPr
 > let { data, children } = $props();
 > ```
 
-In turn, annotating the `load` function with `PageLoad`, `PageServerLoad`, `LayoutLoad` or `LayoutServerLoad` (for `+page.js`, `+page.server.js`, `+layout.js` and `+layout.server.js` respectively) ensures that `params` and the return value are correctly typed.
+In turn, annotating the `load` function with `PageLoad`, `PageServerLoad`, `LayoutLoad` or `LayoutServerLoad` (for `+page.js`, `+page.server.js`, `+layout.js` and `+layout.server.js` respectively) ensures that `params` and the return value are correctly typed. Experimental worker modules use `PageWorkerLoad` or `LayoutWorkerLoad` from `./$worker-types` instead.
 
-If you're using VS Code or any IDE that supports the language server protocol and TypeScript plugins then you can omit these types _entirely_! Svelte's IDE tooling will insert the correct types for you, so you'll get type checking without writing them yourself. It also works with our command line tool `svelte-check`.
+For standard route modules, if you're using VS Code or any IDE that supports the language server protocol and TypeScript plugins then you can omit these types _entirely_! Svelte's IDE tooling will insert the correct types for you, so you'll get type checking without writing them yourself. It also works with our command line tool `svelte-check`. Experimental worker modules instead use the separate worker types and TypeScript program described above.
 
 You can read more about omitting `$types` in our [blog post](/blog/zero-config-type-safety) about it.
 

@@ -84,17 +84,20 @@ declare module '$service-worker' {
 	export interface ResolveOptions {
 		/**
 		 * The fallback strategy. `network-first` fetches from the server and runs matching
-		 * `+layout.worker.js` and `+page.worker.js` loads or actions only if that request fails.
+		 * `+layout.worker.js` and `+page.worker.js` loads or actions only if that fetch rejects.
+		 * HTTP error responses do not trigger the fallback.
 		 * `worker-first` runs matching worker loads or actions before fetching from the server,
-		 * and falls back to the server if no worker route matches.
+		 * and falls back to the server if the worker modules cannot produce a response.
+		 * @default 'network-first'
 		 */
 		strategy?: 'network-first' | 'worker-first';
 	}
 	/**
 	 * Resolve a service worker fetch event with SvelteKit's route-aware fallback handling.
 	 * The resolver tries the network first, then runs matching `+layout.worker.js` and
-	 * `+page.worker.js` load functions for failed SvelteKit data requests, or matching
-	 * `+page.worker.js` actions for failed enhanced form action requests.
+	 * `+page.worker.js` load functions if a SvelteKit data fetch rejects, or matching
+	 * `+page.worker.js` actions if an enhanced form action fetch rejects. HTTP error responses
+	 * are returned without invoking a worker fallback.
 	 */
 	export function resolve(
 		event: { request: Request } | Request,

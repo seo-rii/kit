@@ -123,6 +123,18 @@ Starting with version 2.16.0, two additional helper types are provided: `PagePro
 >
 > `{ "extends": "./.svelte-kit/tsconfig.json" }`
 
+### Generated worker types
+
+When the experimental `kit.experimental.serviceWorkerFallbacks` option is enabled, SvelteKit generates a `$worker-types.d.ts` file next to the usual `$types.d.ts` for routes with a `+page.worker.js` or `+layout.worker.js` module. Import worker-specific types such as `PageWorkerLoad`, `PageWorkerActions` and `LayoutWorkerLoad` from `./$worker-types`.
+
+Worker route modules are checked separately from the rest of the app because browser DOM globals and service-worker globals cannot safely share a TypeScript program. SvelteKit therefore also generates `.svelte-kit/tsconfig.worker.json`, which uses the `WebWorker` library. Run this check in addition to your normal type checks:
+
+```sh
+npx tsc -p .svelte-kit/tsconfig.worker.json
+```
+
+If you configure a custom [`outDir`](configuration#outDir), replace `.svelte-kit` with that directory. See [fallback route data](service-workers#Fallback-route-data) for configuration and usage examples.
+
 ### Default tsconfig.json
 
 The generated `.svelte-kit/tsconfig.json` file contains a mixture of options. Some are generated programmatically based on your project configuration, and should generally not be overridden without good reason:
