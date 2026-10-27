@@ -8,6 +8,10 @@
 		".": {
 			"types": "./src/public.d.ts",
 			"default": "./src/index.js"
+		},
+		"./remote": {
+			"types": "./src/remote-public.d.ts",
+			"default": "./src/remote.js"
 		}
 	},
 	"scripts": {
