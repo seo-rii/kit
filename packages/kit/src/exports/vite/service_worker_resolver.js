@@ -96,10 +96,12 @@ export function create_service_worker_resolver(manifest_data, options = {}) {
 
 		export async function resolve(event, options = {}) {
 			const request = event instanceof Request ? event : event.request;
+			request.signal.throwIfAborted();
 			const strategy = options.strategy ?? 'network-first';
 
 			if (strategy === 'worker-first') {
 				const response = await resolve_worker_response(request);
+				request.signal.throwIfAborted();
 				if (response) return response;
 
 				return fetch(request);
@@ -108,9 +110,13 @@ export function create_service_worker_resolver(manifest_data, options = {}) {
 			const fallback_request = request.method === 'POST' ? request.clone() : request;
 
 			try {
-				return await fetch(request);
+				const response = await fetch(request);
+				request.signal.throwIfAborted();
+				return response;
 			} catch (error) {
+				request.signal.throwIfAborted();
 				const response = await resolve_worker_response(fallback_request);
+				request.signal.throwIfAborted();
 				if (response) return response;
 				throw error;
 			}
@@ -144,6 +150,7 @@ export function create_service_worker_resolver(manifest_data, options = {}) {
 			page_url.searchParams.delete('x-sveltekit-trailing-slash');
 
 			const route_match = await match_worker_route(page_url);
+			request.signal.throwIfAborted();
 			if (!route_match) return null;
 
 			const invalidated = parse_invalidated(
@@ -152,11 +159,21 @@ export function create_service_worker_resolver(manifest_data, options = {}) {
 			);
 
 			const nodes = [];
+			const throw_if_aborted = () => {
+				if (!request.signal.aborted) return;
+				try {
+					// Observe deferred data from completed loads before discarding the response.
+					render_data_response(nodes);
+				} finally {
+					request.signal.throwIfAborted();
+				}
+			};
 			const parent_data = {};
 			const should_load = get_required_workers(route_match.route.nodes, invalidated);
 			let handled = false;
 
 			for (let i = 0; i < route_match.route.nodes.length; i += 1) {
+				throw_if_aborted();
 				const node = route_match.route.nodes[i];
 
 				if (!should_load[i]) {
@@ -187,6 +204,7 @@ export function create_service_worker_resolver(manifest_data, options = {}) {
 						server: (options) => fetch_with_options(request, options)
 					});
 				} catch (error) {
+					throw_if_aborted();
 					if (is_redirect(error)) return redirect_response(error);
 
 					nodes[i] = {
@@ -225,6 +243,7 @@ export function create_service_worker_resolver(manifest_data, options = {}) {
 			const request_url = new URL(request.url);
 			const page_url = new URL(request.url);
 			const route_match = await match_worker_route(page_url);
+			request.signal.throwIfAborted();
 			if (!route_match) return null;
 
 			const node = route_match.route.nodes[route_match.route.nodes.length - 1];
@@ -268,6 +287,7 @@ export function create_service_worker_resolver(manifest_data, options = {}) {
 					})
 				);
 			} catch (error) {
+				request.signal.throwIfAborted();
 				return action_response(normalize_action_error(error));
 			}
 		}

@@ -1,3 +1,5 @@
+import { execFileSync } from 'node:child_process';
+import { execPath } from 'node:process';
 import * as devalue from 'devalue';
 import { expect, test, vi } from 'vitest';
 import { exec } from '../../utils/routing.js';
@@ -107,6 +109,208 @@ async function read_action_data(response) {
 	}
 	return result;
 }
+
+/**
+ * @param {string} method
+ * @param {{ url?: string; signal?: AbortSignal }} options
+ */
+function create_worker_request(method, { url = 'https://example.com/target', signal } = {}) {
+	return new Request(method === 'GET' ? `${url}/__data.json` : url, {
+		method,
+		signal,
+		...(method === 'POST'
+			? {
+					headers: {
+						accept: 'application/json',
+						'content-type': 'application/x-www-form-urlencoded',
+						'x-sveltekit-action': 'true'
+					},
+					body: 'value=test'
+				}
+			: {})
+	});
+}
+
+for (const strategy of ['worker-first', 'network-first']) {
+	test.each(['GET', 'POST'])(
+		`rejects an already aborted %s request without invoking workers (${strategy})`,
+		async (method) => {
+			const controller = new AbortController();
+			const reason = new Error('request canceled');
+			controller.abort(reason);
+			const fetch = vi.fn(() => Promise.reject(new TypeError('offline')));
+			const handler = vi.fn(() => ({ local: true }));
+			const { resolve } = instantiate_resolver(create_manifest(), {
+				fetch,
+				workers: {
+					'/src/routes/target/+page.worker.js': {
+						load: handler,
+						actions: { default: handler }
+					}
+				}
+			});
+
+			await expect(
+				resolve(create_worker_request(method, { signal: controller.signal }), { strategy })
+			).rejects.toBe(reason);
+			expect(handler).not.toHaveBeenCalled();
+			expect(fetch).not.toHaveBeenCalled();
+		}
+	);
+
+	test.each(['GET', 'POST'])(
+		`rejects a %s request canceled during rerouting before invoking workers (${strategy})`,
+		async (method) => {
+			const controller = new AbortController();
+			const reason = new Error('request canceled during rerouting');
+			const handler = vi.fn(() => ({ local: true }));
+			const { resolve } = instantiate_resolver(
+				create_manifest({ hooks: { client: null, server: null, universal: 'src/hooks.js' } }),
+				{
+					fetch: vi.fn(() => Promise.reject(new TypeError('offline'))),
+					hooks: {
+						async reroute() {
+							await Promise.resolve();
+							controller.abort(reason);
+							return '/target';
+						}
+					},
+					workers: {
+						'/src/routes/target/+page.worker.js': {
+							load: handler,
+							actions: { default: handler }
+						}
+					}
+				}
+			);
+
+			await expect(
+				resolve(create_worker_request(method, { signal: controller.signal }), { strategy })
+			).rejects.toBe(reason);
+			expect(handler).not.toHaveBeenCalled();
+		}
+	);
+}
+
+test.each(['GET', 'POST'])(
+	'does not treat cancellation of the initial %s fetch as a network failure',
+	async (method) => {
+		const controller = new AbortController();
+		const reason = new Error('fetch canceled');
+		const fetch = vi.fn(() => {
+			controller.abort(reason);
+			return Promise.reject(reason);
+		});
+		const handler = vi.fn(() => ({ local: true }));
+		const { resolve } = instantiate_resolver(create_manifest(), {
+			fetch,
+			workers: {
+				'/src/routes/target/+page.worker.js': {
+					load: handler,
+					actions: { default: handler }
+				}
+			}
+		});
+
+		await expect(
+			resolve(create_worker_request(method, { signal: controller.signal }))
+		).rejects.toBe(reason);
+		expect(fetch).toHaveBeenCalledOnce();
+		expect(handler).not.toHaveBeenCalled();
+	}
+);
+
+for (const throws of [false, true]) {
+	test.each(['GET', 'POST'])(
+		`preserves %s cancellation when the worker ${throws ? 'throws' : 'returns'}`,
+		async (method) => {
+			const controller = new AbortController();
+			const reason = new Error('request canceled during worker execution');
+			const handler = vi.fn(() => {
+				controller.abort(reason);
+				if (throws) throw reason;
+				return { local: true };
+			});
+			const fetch = vi.fn(() => Promise.reject(new TypeError('offline')));
+			const { resolve } = instantiate_resolver(create_manifest(), {
+				fetch,
+				workers: {
+					'/src/routes/target/+page.worker.js': {
+						load: handler,
+						actions: { default: handler }
+					}
+				}
+			});
+
+			await expect(
+				resolve(create_worker_request(method, { signal: controller.signal }), {
+					strategy: 'worker-first'
+				})
+			).rejects.toBe(reason);
+			expect(handler).toHaveBeenCalledOnce();
+			expect(fetch).not.toHaveBeenCalled();
+		}
+	);
+}
+
+test.each(['layout', 'page'])(
+	'observes completed layout promises when the request is canceled in the %s load',
+	(stage) => {
+		const manifest = create_manifest();
+		manifest.nodes.unshift({
+			depth: 0,
+			server: 'src/routes/+layout.server.js',
+			worker: 'src/routes/+layout.worker.js'
+		});
+		manifest.routes[0].page = { layouts: [0], errors: [], leaf: 1 };
+		const source = create_service_worker_resolver(manifest).replace(
+			/^import \* as (worker_\d+) from ("[^"]+");$/gm,
+			(_, name, file) => `const ${name} = workers[${file}];`
+		);
+
+		execFileSync(
+			execPath,
+			[
+				'--unhandled-rejections=strict',
+				'--input-type=module',
+				'-e',
+				`
+					import assert from 'node:assert/strict';
+					const location = new URL('https://example.com/service-worker.js');
+					const controller = new AbortController();
+					const reason = new Error('request canceled');
+					const stage = ${JSON.stringify(stage)};
+					let page_calls = 0;
+					const workers = {
+						'/src/routes/+layout.worker.js': {
+							load() {
+								if (stage === 'layout') controller.abort(reason);
+								return { later: Promise.reject(new Error('discarded layout promise')) };
+							}
+						},
+						'/src/routes/target/+page.worker.js': {
+							load() {
+								page_calls += 1;
+								controller.abort(reason);
+								throw reason;
+							}
+						}
+					};
+					${source}
+					await assert.rejects(
+						resolve(new Request('https://example.com/target/__data.json', {
+							signal: controller.signal
+						}), { strategy: 'worker-first' }),
+						(error) => error === reason
+					);
+					assert.equal(page_calls, stage === 'layout' ? 0 : 1);
+					await new Promise(setImmediate);
+				`
+			],
+			{ stdio: 'pipe' }
+		);
+	}
+);
 
 test('only imports the params module when a worker route uses a matcher', () => {
 	const manifest = create_manifest();
