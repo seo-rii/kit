@@ -51,7 +51,7 @@ export async function load({ params, url, parent, network }) {
 }
 ```
 
-Use a shared application DTO for server and offline data. This experiment does not change generated route `$types`. Fallback code is shipped to the browser and must not import server modules. Its context has `request`, tracked `url`, typed matcher results in `params`, `route.id`, the source `node`, lazy `parent()`, and a connection hint. `network.status` is a browser hint, not a reachability guarantee. `server({ timeout, signal })` makes an explicit GET attempt and returns the raw `Response`.
+Use a shared application DTO for server and offline data. This experiment does not change generated route `$types`. Fallback code is shipped to the browser and must not import server modules. Its context has `request`, tracked `url`, typed matcher results in `params`, `route.id`, the source `node`, lazy `parent()`, and a connection hint. `network.status` is a browser hint, not a reachability guarantee. `server({ timeout, signal })` makes an explicit GET attempt and returns the raw `Response`. Its `timeout` limits the wait for response headers; the original request signal and optional caller signal also cancel response body reads.
 
 The default `network-first` strategy falls back only after a rejected network request. HTTP errors and aborts retain their original behavior. `worker-first` tries a local data response before the network. Both strategies pass non-GET requests to the network once. Neither captures bodies or queues writes.
 

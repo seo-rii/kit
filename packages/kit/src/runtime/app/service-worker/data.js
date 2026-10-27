@@ -234,12 +234,10 @@ async function retry_request(request, options = {}) {
 	if (options.timeout !== undefined && (!Number.isFinite(options.timeout) || options.timeout < 0))
 		throw new RangeError('timeout must be a non-negative finite number');
 	const controller = new AbortController();
-	const signals = [request.signal, options.signal].filter((signal) => signal !== undefined);
-	const abort = () => controller.abort(signals.find((signal) => signal.aborted)?.reason);
-	for (const signal of signals) {
-		if (signal.aborted) abort();
-		else signal.addEventListener('abort', abort, { once: true });
-	}
+	// Keep cancellation linked after fetch resolves, while the caller consumes the raw body.
+	const signal = AbortSignal.any(
+		[request.signal, options.signal, controller.signal].filter((signal) => signal !== undefined)
+	);
 	const timer =
 		options.timeout === undefined
 			? null
@@ -248,9 +246,9 @@ async function retry_request(request, options = {}) {
 					options.timeout
 				);
 	try {
-		return await fetch(request, { signal: controller.signal });
+		return await fetch(request, { signal });
 	} finally {
+		// The timeout bounds the wait for response headers; caller cancellation also covers the body.
 		if (timer !== null) clearTimeout(timer);
-		for (const signal of signals) signal.removeEventListener('abort', abort);
 	}
 }

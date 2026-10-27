@@ -3851,6 +3851,10 @@ declare module '$app/service-worker' {
 		node: { id: string; kind: 'layout' | 'page' };
 		parent(): Promise<Record<string, any>>;
 		network: { status: 'online' | 'offline' | 'unknown' };
+		/**
+		 * Retry the original data request and return the raw response. `timeout` limits the wait
+		 * for response headers. The request and caller signals also cancel response body reads.
+		 */
 		server(options?: { timeout?: number; signal?: AbortSignal }): Promise<Response>;
 	}
 

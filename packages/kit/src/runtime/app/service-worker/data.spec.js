@@ -1,6 +1,7 @@
 /** @import { FallbackNode, FallbackRoute } from './data.js' */
 /** @import { DataFallbackLoad } from './fallback.js' */
 import { execFileSync } from 'node:child_process';
+import { createServer } from 'node:http';
 import process from 'node:process';
 import { afterEach, expect, test, vi } from 'vitest';
 import * as devalue from 'devalue';
@@ -536,6 +537,63 @@ test('server retries preserve the original request and combine caller cancellati
 	expect(devalue.unflatten(result.nodes[0].data)).toEqual({ message: 'retry cancelled' });
 	expect(fetch).toHaveBeenCalledExactlyOnceWith(original, { signal: expect.any(AbortSignal) });
 });
+
+test.each(['request', 'caller'])(
+	'server retries preserve %s cancellation while reading the response body',
+	async (source) => {
+		const http_server = createServer((_request, response) => {
+			response.writeHead(200, { 'content-type': 'text/plain' });
+			response.write('first bytes');
+		});
+		await new Promise((resolve) => http_server.listen(0, '127.0.0.1', () => resolve(undefined)));
+		const { port } = /** @type {import('node:net').AddressInfo} */ (http_server.address());
+		const server_origin = `http://127.0.0.1:${port}`;
+		const resolve = resolver([route('/items')], {}, {}, { origin: server_origin });
+		const controller = new AbortController();
+		const reason = new DOMException('Cancelled retry', 'AbortError');
+		const headers_ready = Promise.withResolvers();
+		/** @type {unknown} */
+		let body_error;
+		const response = resolve(
+			new Request(`${server_origin}/items/__data.json`, {
+				signal: source === 'request' ? controller.signal : undefined
+			}),
+			{
+				'/items': {
+					page: async ({ server }) => {
+						const retry = await server({
+							signal: source === 'caller' ? controller.signal : undefined
+						});
+						headers_ready.resolve(undefined);
+						try {
+							return { text: await retry.text() };
+						} catch (error) {
+							body_error = error;
+							return { cancelled: true };
+						}
+					}
+				}
+			}
+		).catch((error) => error);
+		try {
+			await headers_ready.promise;
+			controller.abort(reason);
+			await vi.waitFor(() => expect(body_error).toMatchObject({ name: 'AbortError' }), {
+				timeout: 1000
+			});
+			if (source === 'request') {
+				expect(await response).toBe(reason);
+			} else {
+				const [result] = await read(await response);
+				expect(devalue.unflatten(result.nodes[0].data)).toEqual({ cancelled: true });
+			}
+		} finally {
+			http_server.closeAllConnections();
+			await response;
+			await new Promise((resolve) => http_server.close(resolve));
+		}
+	}
+);
 
 test('server retry timeouts abort fetch and release the timer', async () => {
 	vi.useFakeTimers();
