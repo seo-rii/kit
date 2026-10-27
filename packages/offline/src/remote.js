@@ -205,11 +205,15 @@ function get_freshness(response, received_at, age) {
 	) {
 		return null;
 	}
+	// Browsers attach cookies outside the request headers visible to service workers.
 	if (
 		response.headers
 			.get('vary')
 			?.split(',')
-			.some((value) => value.trim() === '*')
+			.some((value) => {
+				const header = value.trim().toLowerCase();
+				return header === '*' || header === 'cookie';
+			})
 	)
 		return null;
 

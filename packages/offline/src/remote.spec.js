@@ -326,6 +326,71 @@ describe('explicit cache opt-in', () => {
 		expect(operations).not.toContain('put');
 	});
 
+	test.each(['Cookie', 'cookie', 'cOoKiE', 'Accept-Language, cOoKiE'])(
+		'revokes caching for Vary: %s even with an explicit Cookie request header',
+		async (vary) => {
+			const { storage, operations } = memory_storage();
+			const response = cacheable('cookie-dependent value', { vary });
+			const clone = vi.spyOn(response, 'clone');
+			const fetch = vi
+				.fn()
+				.mockResolvedValueOnce(cacheable('previous value'))
+				.mockResolvedValueOnce(response)
+				.mockRejectedValue(offline_error);
+			const { handle } = create(fetch, storage);
+			const request = new Request(query_url, {
+				headers: { cookie: 'language=en', 'accept-language': 'en' }
+			});
+			await handle(request);
+			expect(await handle(request)).toBe(response);
+			await expect(handle(request)).rejects.toBe(offline_error);
+			expect(clone).not.toHaveBeenCalled();
+			expect(operations.filter((operation) => operation === 'put')).toHaveLength(1);
+			expect(operations).toContain('delete');
+		}
+	);
+
+	test('refuses and deletes a Vary: Cookie entry stored by an earlier coordinator', async () => {
+		const { storage, namespaces } = memory_storage();
+		const fetch = vi.fn().mockResolvedValueOnce(cacheable()).mockRejectedValue(offline_error);
+		const request = new Request(query_url);
+		await create(fetch, storage).handle(request);
+		const entries = namespaces.values().next().value;
+		const entry = entries?.get(query_url);
+		if (!entry) throw new Error('Expected a persisted remote response');
+		// Preserve valid freshness metadata while reproducing the previous cache policy.
+		entry.response.headers.set('vary', 'Cookie');
+
+		await expect(create(fetch, storage).handle(request)).rejects.toBe(offline_error);
+		expect(entries?.has(query_url)).toBe(false);
+	});
+
+	test('still matches supported Vary headers, including names containing Cookie', async () => {
+		const { storage } = memory_storage();
+		const fetch = vi
+			.fn()
+			.mockResolvedValueOnce(
+				cacheable('matching variant', { vary: 'Accept-Language, X-Cookie-Pref' })
+			)
+			.mockRejectedValue(offline_error);
+		const { handle } = create(fetch, storage);
+		const request = new Request(query_url, {
+			headers: { 'accept-language': 'en', 'x-cookie-pref': 'one' }
+		});
+		await handle(request);
+		await expect(
+			handle(
+				new Request(query_url, { headers: { 'accept-language': 'en', 'x-cookie-pref': 'two' } })
+			)
+		).rejects.toBe(offline_error);
+		await expect(
+			handle(
+				new Request(query_url, { headers: { 'accept-language': 'ko', 'x-cookie-pref': 'one' } })
+			)
+		).rejects.toBe(offline_error);
+		expect(await (await handle(request)).text()).toBe('matching variant');
+	});
+
 	test('a successful no-store response revokes an older cached value', async () => {
 		const { storage } = memory_storage();
 		const response = new Response('revoked', { headers: { 'cache-control': 'no-store' } });
