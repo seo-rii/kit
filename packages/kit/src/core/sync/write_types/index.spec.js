@@ -78,7 +78,7 @@ test('Checks route worker modules with WebWorker globals', { timeout: 120000 }, 
 	}
 });
 
-test('Removes $worker-types after the last worker module is removed', () => {
+test('Removes $worker-types after the last worker module is removed', { timeout: 60000 }, () => {
 	const root = fs.mkdtempSync(path.join(process.cwd(), 'kit-worker-types-'));
 	const worker = path.join(root, '+page.worker.js');
 

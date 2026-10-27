@@ -56,23 +56,49 @@ export function write_worker_declarations(config, manifest, root) {
 		return;
 	}
 
-	const config_file = [
-		path.join(config.kit.outDir, 'tsconfig.worker.json'),
+	/** @type {Set<string>} */
+	const inputs = new Set(workers);
+	/** @type {Set<string>} */
+	const missing = new Set();
+	/** @param {string[]} candidates */
+	const read_config = (candidates) => {
+		const file = candidates.find((file) => {
+			inputs.add(path.resolve(file));
+			return fs.existsSync(file);
+		});
+		return file
+			? ts.getParsedCommandLineOfConfigFile(
+					file,
+					{},
+					{
+						...ts.sys,
+						readFile(file) {
+							inputs.add(path.resolve(file));
+							return ts.sys.readFile(file);
+						},
+						fileExists(file) {
+							inputs.add(path.resolve(file));
+							return ts.sys.fileExists(file);
+						},
+						directoryExists(file) {
+							const exists = ts.sys.directoryExists(file);
+							if (!exists && !file.includes(`${path.sep}node_modules${path.sep}`)) {
+								missing.add(path.resolve(file));
+							}
+							return exists;
+						},
+						onUnRecoverableConfigFileDiagnostic: (diagnostic) => {
+							throw new Error(ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n'));
+						}
+					}
+				)
+			: undefined;
+	};
+	const parsed = read_config([
+		path.resolve(root, config.kit.outDir, 'tsconfig.worker.json'),
 		path.join(root, 'tsconfig.worker.json'),
 		path.join(root, 'tsconfig.json')
-	].find((file) => fs.existsSync(file));
-	const parsed = config_file
-		? ts.getParsedCommandLineOfConfigFile(
-				config_file,
-				{},
-				{
-					...ts.sys,
-					onUnRecoverableConfigFileDiagnostic: (diagnostic) => {
-						throw new Error(ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n'));
-					}
-				}
-			)
-		: undefined;
+	]);
 	const types_directory = path.resolve(root, config.kit.outDir, 'types');
 	const generated = walk(types_directory)
 		.filter((file) => /(?:\$worker-types\.d\.ts|proxy\+(?:page|layout)\.worker\.[jt]s)$/.test(file))
@@ -100,10 +126,6 @@ export function write_worker_declarations(config, manifest, root) {
 		composite: false,
 		outDir: path.join(directory, '.emit')
 	};
-	/** @type {Set<string>} */
-	const inputs = new Set(workers);
-	/** @type {Set<string>} */
-	const missing = new Set();
 	const host = ts.createCompilerHost(options, true);
 	/** @param {import('typescript').FileReference} reference @param {string} file */
 	const resolve_type_reference = (reference, file) =>
@@ -156,9 +178,9 @@ export function write_worker_declarations(config, manifest, root) {
 			}
 			return result;
 		});
+	const worker_files = new Set([...workers, ...generated]);
 	const roots = new Set([
-		...workers,
-		...generated,
+		...worker_files,
 		...(parsed?.fileNames.filter((file) => file.endsWith('.d.ts')) ?? [])
 	]);
 	let program = ts.createProgram({ rootNames: [...roots], options, host });
@@ -206,7 +228,7 @@ export function write_worker_declarations(config, manifest, root) {
 		inputs.add(file);
 		sources.set(file, source);
 		if (
-			!source.isDeclarationFile ||
+			worker_files.has(file) ||
 			source.hasNoDefaultLib ||
 			source.libReferenceDirectives.some((reference) =>
 				/^webworker(?:\.|$)/i.test(reference.fileName)
@@ -230,9 +252,116 @@ export function write_worker_declarations(config, manifest, root) {
 		});
 		references.set(file, imported);
 	}
-	// Shared declaration-only islands retain their original identity (private fields
-	// and unique-symbol brands included). Copy every declaration that can reach an
-	// implementation or a worker lib reference instead of reopening that graph in the app.
+	const result = program.emit(
+		undefined,
+		(_file, text, _bom, _error, sources) => {
+			const source = sources?.[0];
+			if (source && inputs.has(path.resolve(source.fileName))) {
+				declarations.set(path.resolve(source.fileName), text);
+			}
+		},
+		undefined,
+		true
+	);
+	if (result.emitSkipped || result.diagnostics.length) {
+		throw new Error(
+			`Unable to generate route worker declarations:\n${ts.formatDiagnostics(result.diagnostics, {
+				getCanonicalFileName: (file) => file,
+				getCurrentDirectory: () => root,
+				getNewLine: () => '\n'
+			})}`
+		);
+	}
+	for (const [file, source] of sources) {
+		if (!source.isDeclarationFile && !file.endsWith('.json') && !declarations.has(file)) {
+			throw new Error(`Unable to generate a declaration for route worker dependency ${file}`);
+		}
+	}
+
+	// Keep shared implementation types at their original identity too. A module is
+	// shareable only if checking it in the app's environment is valid and infers the
+	// same declarations. In particular, ordinary URL/String/Promise factories can
+	// return brands without creating a second identity in the declaration snapshot.
+	if ([...declarations.keys()].some((file) => !isolated.has(file))) {
+		const app_config = read_config([
+			path.join(root, 'tsconfig.json'),
+			path.join(root, 'jsconfig.json'),
+			path.join(root, config.kit.outDir, 'tsconfig.json')
+		]);
+		/** @param {import('typescript').CompilerOptions} options @param {string[]} roots */
+		const create_app_program = (options, roots) => {
+			const app_host = ts.createCompilerHost(options, true);
+			const get_source_file = app_host.getSourceFile;
+			app_host.getSourceFile = (file, language_version, ...args) => {
+				// Referenced worker libraries must not make worker-only APIs appear valid
+				// in this DOM-only eligibility check. The original worker program is intact.
+				if (/[/\\]lib\.webworker(?:\.[^/\\]+)?\.d\.ts$/.test(file)) {
+					return ts.createSourceFile(file, '', language_version, true);
+				}
+				const source = get_source_file(file, language_version, ...args);
+				if (source) {
+					source.libReferenceDirectives = source.libReferenceDirectives.filter(
+						(reference) => !/^webworker(?:\.|$)/i.test(reference.fileName)
+					);
+					if (!file.startsWith(path.dirname(ts.getDefaultLibFilePath(options)) + path.sep)) {
+						source.hasNoDefaultLib = false;
+					}
+				}
+				return source;
+			};
+			app_host.resolveModuleNameLiterals = host.resolveModuleNameLiterals;
+			return ts.createProgram({ rootNames: roots, options, host: app_host });
+		};
+		const app_program = create_app_program(
+			{ ...options, lib: ['lib.esnext.d.ts', 'lib.dom.d.ts', 'lib.dom.iterable.d.ts'] },
+			[...roots]
+		);
+		/** @type {Map<string, string>} */
+		const app_declarations = new Map();
+		const app_result = app_program.emit(
+			undefined,
+			(_file, text, _bom, _error, sources) => {
+				if (sources?.[0]) app_declarations.set(path.resolve(sources[0].fileName), text);
+			},
+			undefined,
+			true
+		);
+		for (const [file, declaration] of declarations) {
+			if (isolated.has(file)) continue;
+			const source = app_program.getSourceFile(file);
+			if (
+				!source ||
+				app_result.emitSkipped ||
+				app_result.diagnostics.some((diagnostic) => diagnostic.file?.fileName === file) ||
+				app_declarations.get(file) !== declaration ||
+				app_program.getSyntacticDiagnostics(source).length ||
+				app_program.getSemanticDiagnostics(source).length
+			) {
+				isolated.add(file);
+			}
+		}
+		const candidates = [...declarations.keys()].filter((file) => !isolated.has(file));
+		if (app_config && candidates.length) {
+			// App strictness and lib settings must not change the comparison's inferred
+			// declarations, but sharing a source must not introduce new app diagnostics.
+			const checked = create_app_program({ ...app_config.options, noEmit: true }, [
+				...candidates,
+				...app_config.fileNames.filter((file) => /\.d\.[cm]?ts$/.test(file))
+			]);
+			for (const file of candidates) {
+				const source = checked.getSourceFile(file);
+				if (
+					!source ||
+					checked.getSyntacticDiagnostics(source).length ||
+					checked.getSemanticDiagnostics(source).length
+				) {
+					isolated.add(file);
+				}
+			}
+		}
+	}
+	// Shared islands retain their original nominal identity. Copy every declaration
+	// that can reach a worker-specific dependency instead of reopening that graph.
 	let changed = true;
 	while (changed) {
 		changed = false;
@@ -244,6 +373,9 @@ export function write_worker_declarations(config, manifest, root) {
 				changed = true;
 			}
 		}
+	}
+	for (const file of declarations.keys()) {
+		if (!isolated.has(file)) declarations.delete(file);
 	}
 	/** @type {Map<string, string>} */
 	const origins = new Map();
@@ -304,31 +436,6 @@ export function write_worker_declarations(config, manifest, root) {
 			} else {
 				declarations.set(file, source.text);
 			}
-		}
-	}
-	const result = program.emit(
-		undefined,
-		(_file, text, _bom, _error, sources) => {
-			const source = sources?.[0];
-			if (source && inputs.has(path.resolve(source.fileName))) {
-				declarations.set(path.resolve(source.fileName), text);
-			}
-		},
-		undefined,
-		true
-	);
-	if (result.emitSkipped || result.diagnostics.length) {
-		throw new Error(
-			`Unable to generate route worker declarations:\n${ts.formatDiagnostics(result.diagnostics, {
-				getCanonicalFileName: (file) => file,
-				getCurrentDirectory: () => root,
-				getNewLine: () => '\n'
-			})}`
-		);
-	}
-	for (const [file, source] of sources) {
-		if (!source.isDeclarationFile && !file.endsWith('.json') && !declarations.has(file)) {
-			throw new Error(`Unable to generate a declaration for route worker dependency ${file}`);
 		}
 	}
 
@@ -426,8 +533,12 @@ export function write_worker_declarations(config, manifest, root) {
  * @param {(literal: import('typescript').StringLiteralLike) => void} visit
  */
 function visit_imports(source, visit) {
+	/** @type {Set<import('typescript').Node>} */
+	const seen = new Set();
 	/** @param {import('typescript').Node} node */
 	const walk = (node) => {
+		if (seen.has(node)) return;
+		seen.add(node);
 		if (
 			(ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
 			node.moduleSpecifier &&
@@ -442,8 +553,19 @@ function visit_imports(source, visit) {
 			visit(node.argument.literal);
 		} else if (ts.isExternalModuleReference(node) && ts.isStringLiteralLike(node.expression)) {
 			visit(node.expression);
+		} else if (
+			ts.isCallExpression(node) &&
+			(node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+				(ts.isIdentifier(node.expression) && node.expression.text === 'require')) &&
+			node.arguments[0] &&
+			ts.isStringLiteralLike(node.arguments[0])
+		) {
+			visit(node.arguments[0]);
+		} else if (ts.isJSDocImportTag(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
+			visit(node.moduleSpecifier);
 		}
 		ts.forEachChild(node, walk);
+		for (const comment of ts.getJSDocCommentsAndTags(node)) walk(comment);
 	};
 	walk(source);
 }

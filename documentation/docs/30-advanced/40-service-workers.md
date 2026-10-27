@@ -233,6 +233,8 @@ npx tsc -p .svelte-kit/tsconfig.worker.json
 
 This checks both JavaScript and TypeScript worker modules without emitting JavaScript files. Worker return types are inferred in the worker program, and the application's `$types.d.ts` uses generated declarations to preserve `PageData` and `ActionData` inference without importing worker implementations.
 
+Shared TypeScript modules that infer the same declarations in browser and worker type environments retain their original type identities, including brands based on unique symbols. Modules whose types depend on worker-only globals remain isolated in generated declarations.
+
 The generated `$app/tsconfig` excludes route worker modules from the application TypeScript program. If your root `tsconfig.json` overrides `exclude`, also exclude `src/routes/**/+page.worker.*` and `src/routes/**/+layout.worker.*`. Keep worker implementations out of imports in application code; share data types through a module that does not depend on worker globals.
 
 Global ambient declarations that depend on worker implementations or worker-only libraries must expose their types through a file module so SvelteKit can isolate them.
