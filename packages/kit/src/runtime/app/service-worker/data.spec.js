@@ -509,6 +509,55 @@ test('rejects cancelled requests before loads and after an in-flight load', asyn
 	await expect(response).rejects.toBe(reason);
 });
 
+test.each(['plain', 'transport'])(
+	'handles discarded %s deferred data when a load finishes after cancellation',
+	(encoding) => {
+		const output = execFileSync(
+			process.execPath,
+			[
+				'--unhandled-rejections=strict',
+				'--input-type=module',
+				'--eval',
+				`
+					import assert from 'node:assert/strict';
+					import { create_data_resolver } from ${JSON.stringify(new URL('./data.js', import.meta.url).href)};
+					class DeferredValue { constructor(value) { this.value = value; } }
+					const resolve = create_data_resolver([{
+						id: '/items', pattern: /^\\/items$/, params: [], nodes: [
+							{ id: '/items', kind: 'page', server: true }
+						]
+					}], { transport: { DeferredValue: {
+						encode: (value) => value instanceof DeferredValue && [value.value],
+						decode: ([value]) => new DeferredValue(value)
+					} } }, {}, { base: '', version: 'test', versionCheck: true, origin: 'https://example.com' });
+					const controller = new AbortController();
+					const reason = new Error('Navigation cancelled');
+					const started = Promise.withResolvers();
+					const completed = Promise.withResolvers();
+					const pending = resolve(new Request('https://example.com/items/__data.json', {
+						signal: controller.signal
+					}), {
+						'/items': { page: async () => {
+							started.resolve();
+							await completed.promise;
+							const later = Promise.reject(new Error('Discarded deferred failure'));
+							return { later: ${encoding === 'plain' ? 'later' : 'new DeferredValue(later)'} };
+						} }
+					});
+					await started.promise;
+					controller.abort(reason);
+					completed.resolve();
+					await assert.rejects(pending, (error) => error === reason);
+					await new Promise(setImmediate);
+					process.stdout.write('cancelled');
+				`
+			],
+			{ encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
+		);
+		expect(output).toBe('cancelled');
+	}
+);
+
 test('server retries preserve the original request and combine caller cancellation', async () => {
 	const controller = new AbortController();
 	const fetch = vi.fn((/** @type {Request} */ _request, /** @type {RequestInit} */ init) => {

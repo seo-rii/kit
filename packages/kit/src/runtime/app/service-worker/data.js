@@ -134,14 +134,24 @@ export function create_data_resolver(routes, hooks, matchers, options) {
 						},
 						server: (retry) => retry_request(request, retry)
 					});
-					request.signal.throwIfAborted();
 					validate_load_response(data, `data fallback for ${node.id}`);
-					return {
+					/** @type {ServerDataNode} */
+					const result = {
 						type: 'data',
 						data: data ?? null,
 						uses,
 						...(node.slash ? { slash: node.slash } : {})
 					};
+					if (request.signal.aborted) {
+						try {
+							// Observe deferred values, including custom transports, even when this
+							// completed load will be discarded. The cancellation remains the result.
+							serializer.add_node(index, result);
+						} finally {
+							request.signal.throwIfAborted();
+						}
+					}
+					return result;
 				})());
 			};
 
