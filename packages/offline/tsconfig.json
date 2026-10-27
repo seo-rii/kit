@@ -1,0 +1,15 @@
+{
+	"compilerOptions": {
+		"allowJs": true,
+		"checkJs": true,
+		"strict": true,
+		"noEmit": true,
+		"target": "ES2022",
+		"module": "NodeNext",
+		"moduleResolution": "NodeNext",
+		"lib": ["ESNext", "WebWorker"],
+		"types": ["@sveltejs/kit", "node"],
+		"skipLibCheck": true
+	},
+	"include": ["src/**/*.js", "src/**/*.d.ts", "vitest.config.js"]
+}

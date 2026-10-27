@@ -1,0 +1,26 @@
+{
+	"name": "sveltekit-offline",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "Experimental external offline policy package for the SvelteKit data extension",
+	"exports": {
+		".": {
+			"types": "./src/public.d.ts",
+			"default": "./src/index.js"
+		}
+	},
+	"scripts": {
+		"test": "vitest run",
+		"test:unit": "vitest run",
+		"check": "tsc --noEmit"
+	},
+	"peerDependencies": {
+		"@sveltejs/kit": "^3.1.0"
+	},
+	"devDependencies": {
+		"@sveltejs/kit": "workspace:*",
+		"typescript": "catalog:",
+		"vitest": "catalog:"
+	}
+}
