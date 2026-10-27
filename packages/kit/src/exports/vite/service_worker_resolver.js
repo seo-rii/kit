@@ -12,14 +12,11 @@ const routing = posixify(fileURLToPath(new URL('../../utils/routing.js', import.
  * @param {{ base?: string; version?: string; version_check?: boolean }} [options]
  */
 export function create_service_worker_resolver(manifest_data, options = {}) {
-	const routes = manifest_data.routes.filter((route) => {
-		if (!route.page) return false;
-
-		return [...route.page.layouts, route.page.leaf].some((i) => {
-			const node = i === undefined ? null : manifest_data.nodes[i];
-			return node?.worker;
-		});
-	});
+	// Routes without workers still take precedence over less specific worker routes.
+	const has_workers = manifest_data.nodes.some((node) => node.worker);
+	const routes = has_workers
+		? manifest_data.routes.filter((route) => route.page || route.endpoint)
+		: [];
 
 	/** @type {string[]} */
 	const imports = [];
@@ -42,8 +39,8 @@ export function create_service_worker_resolver(manifest_data, options = {}) {
 	}
 
 	const route_data = routes.map((route) => {
-		const page = /** @type {NonNullable<import('types').RouteData['page']>} */ (route.page);
-		const nodes = [...page.layouts, page.leaf].map((index) => {
+		const page = route.page;
+		const nodes = (page ? [...page.layouts, page.leaf] : []).map((index) => {
 			const node = index === undefined ? null : manifest_data.nodes[index];
 			if (!node) return 'null';
 

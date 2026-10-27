@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { execPath } from 'node:process';
 import * as devalue from 'devalue';
 import { expect, test, vi } from 'vitest';
-import { exec } from '../../utils/routing.js';
+import { exec, parse_route_id } from '../../utils/routing.js';
 import { create_service_worker_resolver } from './service_worker_resolver.js';
 
 /**
@@ -398,7 +398,138 @@ for (const strategy of ['worker-first', 'network-first']) {
 	}
 }
 
-test('only imports the params module when a worker route uses a matcher', () => {
+for (const strategy of ['worker-first', 'network-first']) {
+	for (const method of ['GET', 'POST']) {
+		test.each(['page', 'endpoint', 'matched page'])(
+			`does not run a catch-all worker for a higher-priority %s (${method}, ${strategy})`,
+			async (kind) => {
+				const manifest = create_manifest({
+					route_id: '/[...rest]',
+					...parse_route_id('/[...rest]'),
+					params_file: 'src/params.js'
+				});
+				const blocked_id = kind === 'matched page' ? '/[name=blocked]' : '/admin';
+				const node = { depth: 0, server: 'src/routes/admin/+page.server.js' };
+				manifest.nodes.push(node);
+				manifest.routes.unshift({
+					...manifest.routes[0],
+					id: blocked_id,
+					...parse_route_id(blocked_id),
+					page: kind === 'endpoint' ? null : { layouts: [], errors: [], leaf: 1 },
+					leaf: kind === 'endpoint' ? null : node,
+					endpoint:
+						kind === 'endpoint' ? { file: 'src/routes/admin/+server.js', page_options: null } : null
+				});
+				const error = new TypeError('offline');
+				const network_response = new Response('network');
+				const fetch = vi.fn(() =>
+					strategy === 'network-first' ? Promise.reject(error) : Promise.resolve(network_response)
+				);
+				const handler = vi.fn(() => ({ source: 'catch-all' }));
+				const matcher = vi.fn((/** @type {unknown} */ value) =>
+					value === 'admin' ? { value } : { issues: [{ message: 'Not an admin route' }] }
+				);
+				const { resolve } = instantiate_resolver(manifest, {
+					fetch,
+					matchers: {
+						blocked: { '~standard': { version: 1, vendor: 'test', validate: matcher } }
+					},
+					workers: {
+						'/src/routes/target/+page.worker.js': {
+							load: handler,
+							actions: { default: handler }
+						}
+					}
+				});
+				const request = create_worker_request(method, { url: 'https://example.com/admin' });
+
+				if (strategy === 'network-first') {
+					await expect(resolve(request, { strategy })).rejects.toBe(error);
+				} else {
+					expect(await resolve(request, { strategy })).toBe(network_response);
+				}
+				expect(fetch).toHaveBeenCalledExactlyOnceWith(request);
+				expect(handler).not.toHaveBeenCalled();
+				if (kind === 'matched page') expect(matcher).toHaveBeenCalledExactlyOnceWith('admin');
+			}
+		);
+	}
+}
+
+test.each(['GET', 'POST'])(
+	'allows a catch-all worker when a higher-priority matcher rejects the %s route',
+	async (method) => {
+		const manifest = create_manifest({
+			route_id: '/[...rest]',
+			...parse_route_id('/[...rest]'),
+			params_file: 'src/params.js'
+		});
+		manifest.routes.unshift({
+			...manifest.routes[0],
+			id: '/[name=blocked]',
+			...parse_route_id('/[name=blocked]'),
+			page: null,
+			leaf: null,
+			endpoint: { file: 'src/routes/[name=blocked]/+server.js', page_options: null }
+		});
+		const fetch = vi.fn();
+		const handler = vi.fn(() => ({ source: 'catch-all' }));
+		const matcher = vi.fn(() => ({ issues: [{ message: 'Not an admin route' }] }));
+		const { resolve } = instantiate_resolver(manifest, {
+			fetch,
+			matchers: { blocked: { '~standard': { version: 1, vendor: 'test', validate: matcher } } },
+			workers: {
+				'/src/routes/target/+page.worker.js': { load: handler, actions: { default: handler } }
+			}
+		});
+
+		const response = await resolve(create_worker_request(method), { strategy: 'worker-first' });
+		expect(response.status).toBe(200);
+		expect(matcher).toHaveBeenCalledExactlyOnceWith('target');
+		expect(handler).toHaveBeenCalledOnce();
+		expect(fetch).not.toHaveBeenCalled();
+	}
+);
+
+for (const method of ['GET', 'POST']) {
+	test.each(['/', '/admin'])(
+		`allows a catch-all worker below a layout-only directory %s (${method})`,
+		async (route_id) => {
+			const manifest = create_manifest({
+				route_id: '/[...rest]',
+				...parse_route_id('/[...rest]')
+			});
+			manifest.routes.unshift({
+				...manifest.routes[0],
+				id: route_id,
+				...parse_route_id(route_id),
+				page: null,
+				leaf: null,
+				layout: { depth: 0, universal: 'src/routes/+layout.js' }
+			});
+			const fetch = vi.fn(() => Promise.resolve(new Response('network')));
+			const handler = vi.fn(() => ({ source: 'catch-all' }));
+			const { resolve } = instantiate_resolver(manifest, {
+				fetch,
+				workers: {
+					'/src/routes/target/+page.worker.js': { load: handler, actions: { default: handler } }
+				}
+			});
+
+			const response = await resolve(
+				create_worker_request(method, {
+					url: `https://example.com${route_id === '/' ? '' : route_id}`
+				}),
+				{ strategy: 'worker-first' }
+			);
+			expect(response.status).toBe(200);
+			expect(handler).toHaveBeenCalledOnce();
+			expect(fetch).not.toHaveBeenCalled();
+		}
+	);
+}
+
+test('only imports the params module when a route uses a matcher', () => {
 	const manifest = create_manifest();
 	const worker_route = manifest.routes[0];
 	worker_route.id = '/worker/[id=used]';
