@@ -53,3 +53,11 @@ declare module '__sveltekit/manifest-data' {
 	export const prerendered: Array<{ path: string }>;
 	export const routes: Array<{ id: string }>;
 }
+
+/** Generated route-aware service worker request resolver */
+declare module '__sveltekit/service-worker-resolver' {
+	export function resolve(
+		event: Request | { request: Request },
+		options?: { strategy?: 'network-first' | 'worker-first' }
+	): Promise<Response>;
+}

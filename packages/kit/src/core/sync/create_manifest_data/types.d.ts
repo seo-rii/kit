@@ -34,4 +34,10 @@ interface RouteServerModule {
 	is_layout: boolean;
 }
 
-export type RouteFile = RouteComponent | RouteSharedModule | RouteServerModule;
+interface RouteWorkerModule {
+	kind: 'worker';
+	is_page: boolean;
+	is_layout: boolean;
+}
+
+export type RouteFile = RouteComponent | RouteSharedModule | RouteServerModule | RouteWorkerModule;

@@ -207,7 +207,7 @@ function create_routes_and_nodes(cwd, config, fallback) {
 					// check if it is a valid route filename but missing the + prefix
 					const typo =
 						/^(?:(page(?:@(.*))?)|(layout(?:@(.*))?)|(error))$/.test(name) ||
-						/^(?:(server)|(page(?:(@[a-zA-Z0-9_-]*))?(\.server)?)|(layout(?:(@[a-zA-Z0-9_-]*))?(\.server)?))$/.test(
+						/^(?:(server)|(page(?:(@[a-zA-Z0-9_-]*))?(\.server)?|page\.worker)|(layout(?:(@[a-zA-Z0-9_-]*))?(\.server)?|layout\.worker))$/.test(
 							name
 						);
 					if (typo) {
@@ -230,7 +230,7 @@ function create_routes_and_nodes(cwd, config, fallback) {
 
 					const valid =
 						/^\+(?:(page(?:@(.*))?)|(layout(?:@(.*))?)|(error))$/.test(name) ||
-						/^\+(?:(server)|(page(?:(@[a-zA-Z0-9_-]*))?(\.server)?)|(layout(?:(@[a-zA-Z0-9_-]*))?(\.server)?))$/.test(
+						/^\+(?:(server)|(page(?:(@[a-zA-Z0-9_-]*))?(\.server)?|page\.worker)|(layout(?:(@[a-zA-Z0-9_-]*))?(\.server)?|layout\.worker))$/.test(
 							name
 						);
 
@@ -245,6 +245,12 @@ function create_routes_and_nodes(cwd, config, fallback) {
 					config.extensions,
 					config.kit.moduleExtensions
 				);
+
+				if (item.kind === 'worker' && !config.kit.experimental.serviceWorkerFallbacks) {
+					throw new Error(
+						`Route worker files require \`config.kit.experimental.serviceWorkerFallbacks\` to be enabled (saw ${project_relative})`
+					);
+				}
 
 				if (config.kit.router.type === 'hash' && item.kind === 'server') {
 					throw new Error(
@@ -513,6 +519,14 @@ function analyze(project_relative, file, component_extensions, module_extensions
 	const module_extension = module_extensions.find((ext) => file.endsWith(ext));
 	if (module_extension) {
 		const name = file.slice(0, -module_extension.length);
+		if (name === '+page.worker' || name === '+layout.worker') {
+			return {
+				kind: 'worker',
+				is_page: name === '+page.worker',
+				is_layout: name === '+layout.worker'
+			};
+		}
+
 		const pattern =
 			/^\+(?:(server)|(page(?:(@[a-zA-Z0-9_-]*))?(\.server)?)|(layout(?:(@[a-zA-Z0-9_-]*))?(\.server)?))$/;
 		const match = pattern.exec(name);

@@ -29,6 +29,7 @@ import { runtime_directory, logger } from '../../core/utils.js';
 import { generate_manifest } from '../../core/generate_manifest/index.js';
 import { build_server_nodes } from './build/build_server.js';
 import { find_deps, resolve_symlinks } from './build/utils.js';
+import { create_service_worker_resolver } from './service_worker_resolver.js';
 import { dev, invalidate_module } from './dev/index.js';
 import { preview } from './preview/index.js';
 import {
@@ -55,7 +56,8 @@ import {
 	sveltekit_env_service_worker,
 	sveltekit_manifest_data,
 	sveltekit_env_public_client,
-	sveltekit_env_public_server
+	sveltekit_env_public_server,
+	service_worker_resolver
 } from './module_ids.js';
 import { import_peer } from '../../utils/import.js';
 import { compact } from '../../utils/array.js';
@@ -633,7 +635,8 @@ function kit({ svelte_config }) {
 					exactRegex(sveltekit_env_public_client),
 					exactRegex(sveltekit_env_public_server),
 					exactRegex(sveltekit_env_service_worker),
-					exactRegex(sveltekit_manifest_data)
+					exactRegex(sveltekit_manifest_data),
+					exactRegex(service_worker_resolver)
 				]
 			},
 			handler(id) {
@@ -677,6 +680,14 @@ function kit({ svelte_config }) {
 									kit.version.name,
 									kit_global
 								);
+
+					case service_worker_resolver:
+						manifest_data ??= sync.all(svelte_config, root).manifest_data;
+						return create_service_worker_resolver(manifest_data, {
+							base: kit.paths.base,
+							version: kit.version.name,
+							version_check: kit.output.bundleStrategy !== 'inline'
+						});
 				}
 			}
 		}
@@ -1104,7 +1115,8 @@ function kit({ svelte_config }) {
 					exactRegex('\0virtual:app/manifest'),
 					exactRegex(sveltekit_manifest_data),
 					exactRegex(sveltekit_env_service_worker),
-					exactRegex(sveltekit_env_public_client)
+					exactRegex(sveltekit_env_public_client),
+					exactRegex(service_worker_resolver)
 				]
 			},
 			handler(id) {
@@ -1181,6 +1193,14 @@ function kit({ svelte_config }) {
 						env,
 						`const env = ${kit_global}.env;`
 					);
+				}
+
+				if (id === service_worker_resolver) {
+					return create_service_worker_resolver(manifest_data, {
+						base: kit.paths.base,
+						version: kit.version.name,
+						version_check: kit.output.bundleStrategy !== 'inline'
+					});
 				}
 			}
 		},

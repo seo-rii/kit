@@ -98,6 +98,7 @@ const get_defaults = (prefix = '') => ({
 		},
 		experimental: {
 			remoteFunctions: false,
+			serviceWorkerFallbacks: false,
 			forkPreloads: false
 		},
 		files: {
@@ -610,11 +611,15 @@ test('split_config splits the shadowed `experimental` namespace', () => {
 	const { svelte_config, vite_plugin_svelte_config } = split_config({
 		experimental: /** @type {any} */ ({
 			remoteFunctions: true,
+			serviceWorkerFallbacks: true,
 			sendWarningsToBrowser: true
 		})
 	});
 
-	expect(svelte_config.kit?.experimental).toEqual({ remoteFunctions: true });
+	expect(svelte_config.kit?.experimental).toEqual({
+		remoteFunctions: true,
+		serviceWorkerFallbacks: true
+	});
 	expect(vite_plugin_svelte_config).toEqual({ experimental: { sendWarningsToBrowser: true } });
 });
 

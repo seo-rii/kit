@@ -139,6 +139,7 @@ export const validate_kit_options = object({
 				`\`${keypath}\` has been removed. \`src/instrumentation.server.js\` is now included in the build automatically when it exists; no opt-in is required`
 		),
 		remoteFunctions: boolean(false),
+		serviceWorkerFallbacks: boolean(false),
 		forkPreloads: boolean(false),
 		handleRenderingErrors: removed()
 	}),

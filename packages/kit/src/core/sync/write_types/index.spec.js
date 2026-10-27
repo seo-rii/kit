@@ -18,7 +18,9 @@ const cwd = path.join(import.meta.dirname, 'test');
 function run_test(dir) {
 	rimraf(path.join(cwd, dir, '.svelte-kit'));
 
-	const initial = validate_config({});
+	const initial = validate_config(
+		dir === 'actions' ? { kit: { experimental: { serviceWorkerFallbacks: true } } } : {}
+	);
 
 	initial.kit.files.assets = path.resolve(cwd, 'static');
 	initial.kit.files.params = path.resolve(cwd, dir, 'params');
@@ -60,6 +62,58 @@ describe('Creates correct $types', () => {
 				throw e;
 			}
 		});
+	}
+});
+
+test('Checks route worker modules with WebWorker globals', { timeout: 120000 }, () => {
+	run_test('actions');
+
+	try {
+		execSync('pnpm testtypes:worker', {
+			cwd: path.join(cwd, 'actions')
+		});
+	} catch (e) {
+		console.error(/** @type {any} */ (e).stdout.toString());
+		throw e;
+	}
+});
+
+test('Removes $worker-types after the last worker module is removed', () => {
+	const root = fs.mkdtempSync(path.join(process.cwd(), 'kit-worker-types-'));
+	const worker = path.join(root, '+page.worker.js');
+
+	try {
+		fs.writeFileSync(worker, 'export const actions = { default: () => ({ offline: true }) };');
+		const initial = validate_config({
+			kit: {
+				experimental: {
+					serviceWorkerFallbacks: true
+				}
+			}
+		});
+		initial.kit.files.assets = path.join(root, 'static');
+		initial.kit.files.params = path.join(root, 'params');
+		initial.kit.files.routes = root;
+		initial.kit.outDir = path.join(root, '.svelte-kit');
+
+		let manifest = create_manifest_data({
+			config: /** @type {import('types').ValidatedConfig} */ (initial),
+			cwd: root
+		});
+		write_all_types(initial, manifest, root);
+
+		const generated = path.join(initial.kit.outDir, 'types', '$worker-types.d.ts');
+		expect(fs.existsSync(generated)).toBe(true);
+
+		fs.unlinkSync(worker);
+		manifest = create_manifest_data({
+			config: /** @type {import('types').ValidatedConfig} */ (initial),
+			cwd: root
+		});
+		write_all_types(initial, manifest, root);
+		expect(fs.existsSync(generated)).toBe(false);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
 	}
 });
 

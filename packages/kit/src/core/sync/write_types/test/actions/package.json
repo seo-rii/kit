@@ -6,6 +6,7 @@
 		"typescript": "~6.0.3"
 	},
 	"scripts": {
-		"testtypes": "tsc"
+		"testtypes": "tsc",
+		"testtypes:worker": "tsc -p tsconfig.worker.json"
 	}
 }

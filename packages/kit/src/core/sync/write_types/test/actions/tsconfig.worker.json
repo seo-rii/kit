@@ -1,0 +1,25 @@
+{
+	"compilerOptions": {
+		"allowJs": true,
+		"checkJs": true,
+		"noEmit": true,
+		"target": "esnext",
+		"module": "esnext",
+		"moduleResolution": "bundler",
+		"lib": ["esnext", "webworker"],
+		"rootDirs": [".", ".svelte-kit/types"],
+		"skipLibCheck": true,
+		"paths": {
+			"@sveltejs/kit": ["../../../../../exports/public"],
+			"types": ["../../../../../types/internal"],
+			"$app/types": ["../../../../../types/ambient.d.ts"]
+		},
+		"types": []
+	},
+	"include": [
+		"./**/+page.worker.js",
+		"./**/+layout.worker.js",
+		".svelte-kit/types/**/$worker-types.d.ts"
+	],
+	"exclude": [".svelte-kit/types/**/proxy*.js"]
+}

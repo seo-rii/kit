@@ -47,7 +47,11 @@ export default [
 		languageOptions: {
 			parserOptions: {
 				projectService: {
-					allowDefaultProject: ['packages/kit/src/runtime/app/service-worker/index.js']
+					allowDefaultProject: [
+						'packages/kit/src/runtime/app/service-worker/index.js',
+						'packages/kit/src/core/sync/write_types/test/actions/worker-fallback/*.worker.js',
+						'packages/kit/src/core/sync/write_types/test/actions/worker-fallback/*/*.worker.js'
+					]
 				}
 			}
 		},

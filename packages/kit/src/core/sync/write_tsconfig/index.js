@@ -3,7 +3,7 @@ import process from 'node:process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { styleText } from 'node:util';
-import { write_if_changed } from '../utils.js';
+import { write, write_if_changed } from '../utils.js';
 import {
 	ESSENTIAL_OPTIONS,
 	extends_id,
@@ -29,6 +29,15 @@ try {
  */
 export function write_tsconfig(kit, root) {
 	const paths = get_paths(kit, root);
+	const route_worker_files = [];
+
+	if (kit.experimental.serviceWorkerFallbacks) {
+		for (const basename of ['+page.worker', '+layout.worker']) {
+			for (const extension of kit.moduleExtensions) {
+				route_worker_files.push(path.join(kit.files.routes, '**', `${basename}${extension}`));
+			}
+		}
+	}
 
 	write_parent_tsconfig(
 		root,
@@ -47,7 +56,7 @@ export function write_tsconfig(kit, root) {
 				...ESSENTIAL_OPTIONS,
 				...RECOMMENDED_OPTIONS
 			},
-			exclude: [kit.files.serviceWorker]
+			exclude: [kit.files.serviceWorker, ...route_worker_files]
 		},
 		{
 			extends: '$app/tsconfig',
@@ -72,6 +81,33 @@ export function write_tsconfig(kit, root) {
 			extends: '$app/tsconfig/service-worker'
 		}
 	);
+
+	const route_worker_out = path.join(kit.outDir, 'tsconfig.worker.json');
+
+	if (kit.experimental.serviceWorkerFallbacks) {
+		const route_worker_config = normalize_config(route_worker_out, {
+			extends: '$app/tsconfig/service-worker',
+			compilerOptions: {
+				rootDirs: [root, `${kit.outDir}/types`],
+				skipLibCheck: true
+			},
+			include: [
+				...route_worker_files,
+				`${kit.outDir}/types/**/$worker-types.d.ts`,
+				`${kit.files.src}/**/*.d.ts`
+			],
+			exclude: [path.join(root, 'node_modules/**'), kit.files.serviceWorker]
+		});
+
+		const contents = JSON.stringify(route_worker_config, null, '\t');
+		if (fs.existsSync(route_worker_out)) {
+			write_if_changed(route_worker_out, contents);
+		} else {
+			write(route_worker_out, contents);
+		}
+	} else if (fs.existsSync(route_worker_out)) {
+		fs.unlinkSync(route_worker_out);
+	}
 }
 
 /**

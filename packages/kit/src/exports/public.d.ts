@@ -482,6 +482,12 @@ export interface KitConfig {
 		remoteFunctions?: boolean;
 
 		/**
+		 * Whether to enable experimental route-aware service worker fallbacks using `+layout.worker.js` and `+page.worker.js` files.
+		 * @default false
+		 */
+		serviceWorkerFallbacks?: boolean;
+
+		/**
 		 * Whether to enable the experimental forked preloading feature using Svelte's fork API.
 		 * @default false
 		 */
@@ -1832,6 +1838,99 @@ export type ServerLoad<
 	OutputData extends Record<string, any> | void = Record<string, any> | void,
 	RouteId extends AppRouteId | null = AppRouteId | null
 > = (event: ServerLoadEvent<Params, ParentData, RouteId>) => MaybePromise<OutputData>;
+
+/**
+ * The generic form of `PageWorkerLoad` and `LayoutWorkerLoad`. You should import those from
+ * `./$worker-types`.
+ *
+ * This experimental API lets a service worker provide fallback data for page and layout server
+ * `load` functions when the network request for SvelteKit data fails.
+ */
+export type WorkerLoad<
+	Params extends AppLayoutParams<'/'> = AppLayoutParams<'/'>,
+	ParentData extends Record<string, any> = Record<string, any>,
+	OutputData extends Record<string, any> | void = Record<string, any> | void,
+	RouteId extends AppRouteId | null = AppRouteId | null
+> = (event: WorkerLoadEvent<Params, ParentData, RouteId>) => MaybePromise<OutputData>;
+
+/**
+ * A fallback action exported from a `+page.worker.js` file.
+ */
+export type WorkerAction<
+	Params extends AppLayoutParams<'/'> = AppLayoutParams<'/'>,
+	Success extends Record<string, any> | void = Record<string, any> | void,
+	Failure extends Record<string, any> | void = Record<string, any> | void,
+	RouteId extends AppRouteId | null = AppRouteId | null
+> = (
+	event: WorkerActionEvent<Params, RouteId>
+) => MaybePromise<
+	| Success
+	| ActionFailure<Failure>
+	| ActionResult<
+			Success extends void ? undefined : Success,
+			Failure extends void ? undefined : Failure
+	  >
+>;
+
+/**
+ * The fallback actions exported from a `+page.worker.js` file.
+ */
+export type WorkerActions<
+	Params extends AppLayoutParams<'/'> = AppLayoutParams<'/'>,
+	Success extends Record<string, any> | void = Record<string, any> | void,
+	Failure extends Record<string, any> | void = Record<string, any> | void,
+	RouteId extends AppRouteId | null = AppRouteId | null
+> = Record<string, WorkerAction<Params, Success, Failure, RouteId>>;
+
+export interface WorkerNetworkState {
+	status: 'online' | 'offline' | 'unknown';
+}
+
+export interface WorkerLoadEvent<
+	Params extends AppLayoutParams<'/'> = AppLayoutParams<'/'>,
+	ParentData extends Record<string, any> = Record<string, any>,
+	RouteId extends AppRouteId | null = AppRouteId | null
+> extends NavigationEvent<Params, RouteId> {
+	/**
+	 * The original SvelteKit data request.
+	 */
+	request: Request;
+	/**
+	 * Best-effort connectivity information available to the service worker.
+	 */
+	network: WorkerNetworkState;
+	/**
+	 * Returns fallback data from parent layouts that was provided by earlier worker loads in the
+	 * current SvelteKit data request.
+	 */
+	parent: () => Promise<ParentData>;
+	/**
+	 * Retries the original server data request. Callers can provide a timeout or signal.
+	 */
+	server: (options?: { timeout?: number; signal?: AbortSignal }) => Promise<Response>;
+}
+
+export interface WorkerActionEvent<
+	Params extends AppLayoutParams<'/'> = AppLayoutParams<'/'>,
+	RouteId extends AppRouteId | null = AppRouteId | null
+> extends NavigationEvent<Params, RouteId> {
+	/**
+	 * The original enhanced form action request.
+	 */
+	request: Request;
+	/**
+	 * Best-effort connectivity information available to the service worker.
+	 */
+	network: WorkerNetworkState;
+	/**
+	 * The action name selected from the request URL.
+	 */
+	action: string;
+	/**
+	 * Retries the original server action request. Callers can provide a timeout or signal.
+	 */
+	server: (options?: { timeout?: number; signal?: AbortSignal }) => Promise<Response>;
+}
 
 export interface ServerLoadEvent<
 	Params extends AppLayoutParams<'/'> = AppLayoutParams<'/'>,

@@ -3,6 +3,7 @@
 /// <reference lib="webworker" />
 
 import { DEV } from 'esm-env';
+import { resolve as resolve_worker_request } from '__sveltekit/service-worker-resolver';
 
 /**
  * The execution context of a service worker. This export exists to make it easier to
@@ -21,4 +22,15 @@ if (DEV) {
 	) {
 		throw new Error('The `$app/service-worker` module can only be imported into a service worker');
 	}
+}
+
+/**
+ * Resolve a service worker fetch event with SvelteKit's route-aware fallback handling.
+ *
+ * @param {Request | { request: Request }} event
+ * @param {{ strategy?: 'network-first' | 'worker-first' }} [options]
+ * @returns {Promise<Response>}
+ */
+export function resolve(event, options) {
+	return resolve_worker_request(event, options);
 }

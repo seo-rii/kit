@@ -14,5 +14,5 @@
 		"types": ["node"]
 	},
 	"include": ["./**/*.js", "./**/*.ts", ".svelte-kit/non-ambient.d.ts"],
-	"exclude": ["..svelte-kit/**"]
+	"exclude": [".svelte-kit/**", "**/+page.worker.*", "**/+layout.worker.*"]
 }

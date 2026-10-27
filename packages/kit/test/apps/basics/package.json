@@ -7,7 +7,7 @@
 		"build": "vite build",
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync",
-		"check": "svelte-kit sync && tsc && svelte-check",
+		"check": "svelte-kit sync && tsc && tsc -p .svelte-kit/tsconfig.worker.json && svelte-check",
 		"test": "pnpm test:unit && pnpm test:dev && pnpm test:build",
 		"test:dev": "node test/setup.js && DEV=true playwright test",
 		"test:build": "node test/setup.js && PUBLIC_PRERENDERING=false playwright test",

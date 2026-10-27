@@ -19,7 +19,8 @@ const is_whitespace = (/** @type {string} */ char) => /\s/.test(char);
  *
  *  @typedef {{
  *   server: Proxy,
- *   universal: Proxy
+ *   universal: Proxy,
+ *   worker: Proxy
  *  }} Proxies
  *
  *  @typedef {Map<import('types').PageNode, {route: import('types').RouteData, proxies: Proxies}>} RoutesMap
@@ -76,6 +77,7 @@ export function write_all_types(config, manifest_data, root) {
 		while (node) {
 			if (node.universal) input_files.push(node.universal);
 			if (node.server) input_files.push(node.server);
+			if (node.worker) input_files.push(node.worker);
 			node = node.parent ?? null;
 		}
 
@@ -84,6 +86,7 @@ export function write_all_types(config, manifest_data, root) {
 		while (node) {
 			if (node.universal) input_files.push(node.universal);
 			if (node.server) input_files.push(node.server);
+			if (node.worker) input_files.push(node.worker);
 			node = node.parent ?? null;
 		}
 
@@ -165,7 +168,7 @@ function create_routes_map(manifest_data) {
 	const map = new Map();
 	for (const route of manifest_data.routes) {
 		if (route.leaf) {
-			map.set(route.leaf, { route, proxies: { server: null, universal: null } });
+			map.set(route.leaf, { route, proxies: { server: null, universal: null, worker: null } });
 		}
 	}
 	return map;
@@ -193,12 +196,22 @@ function update_types(config, routes, route, root, to_delete = new Set()) {
 
 	/** @type {string[]} */
 	const exports = [];
+	/** @type {string[]} */
+	const worker_declarations = [];
+	/** @type {string[]} */
+	const worker_exports = [];
 
 	// add 'Expand' helper
 	// Makes sure a type is "repackaged" and therefore more readable
 	declarations.push('type Expand<T> = T extends infer O ? { [K in keyof O]: O[K] } : never;');
+	worker_declarations.push(
+		'type Expand<T> = T extends infer O ? { [K in keyof O]: O[K] } : never;'
+	);
 
 	declarations.push(
+		'type RouteParams = ' + generate_params_type(route.params, outdir, config) + ';'
+	);
+	worker_declarations.push(
 		'type RouteParams = ' + generate_params_type(route.params, outdir, config) + ';'
 	);
 
@@ -209,6 +222,7 @@ function update_types(config, routes, route, root, to_delete = new Set()) {
 	}
 
 	declarations.push(`type RouteId = '${route.id}';`);
+	worker_declarations.push(`type RouteId = '${route.id}';`);
 
 	// These could also be placed in our public types, but it would bloat them unnecessarily and we may want to change these in the future
 	if (route.layout || route.leaf) {
@@ -235,13 +249,20 @@ function update_types(config, routes, route, root, to_delete = new Set()) {
 
 			'export type ErrorProps = { error: App.Error };'
 		);
+		worker_declarations.push(
+			'type MaybeWithVoid<T> = {} extends T ? T | void : T;',
+			'type RequiredKeys<T> = { [K in keyof T]-?: {} extends { [P in K]: T[K] } ? never : K; }[keyof T];',
+			'type OutputDataShape<T> = MaybeWithVoid<Omit<App.PageData, RequiredKeys<T>> & Partial<Pick<App.PageData, keyof T & keyof App.PageData>> & Record<string, any>>',
+			'type EnsureDefined<T> = T extends null | undefined ? {} : T;',
+			'type OptionalUnion<U extends Record<string, any>, A extends keyof U = U extends U ? keyof U : never> = U extends unknown ? { [P in Exclude<A, keyof U>]?: never } & U : never;'
+		);
 	}
 
 	if (route.leaf) {
 		let route_info = routes.get(route.leaf);
 		if (!route_info) {
 			// This should be defined, but belts and braces
-			route_info = { route, proxies: { server: null, universal: null } };
+			route_info = { route, proxies: { server: null, universal: null, worker: null } };
 			routes.set(route.leaf, route_info);
 		}
 
@@ -249,7 +270,16 @@ function update_types(config, routes, route, root, to_delete = new Set()) {
 			declarations: d,
 			exports: e,
 			proxies
-		} = process_node(route.leaf, outdir, true, route_info.proxies, root);
+		} = process_node(
+			route.leaf,
+			outdir,
+			true,
+			route_info.proxies,
+			root,
+			true,
+			worker_declarations,
+			worker_exports
+		);
 
 		exports.push(...e);
 		declarations.push(...d);
@@ -262,11 +292,20 @@ function update_types(config, routes, route, root, to_delete = new Set()) {
 			route_info.proxies.universal = proxies.universal;
 			if (proxies.universal?.modified) to_delete.delete(proxies.universal.file_name);
 		}
+		if (proxies.worker) {
+			route_info.proxies.worker = proxies.worker;
+			if (proxies.worker?.modified) to_delete.delete(proxies.worker.file_name);
+		}
 
 		if (route.leaf.server) {
 			exports.push(
 				'export type Action<OutputData extends Record<string, any> | void = Record<string, any> | void> = Kit.Action<RouteParams, OutputData, RouteId>',
-				'export type Actions<OutputData extends Record<string, any> | void = Record<string, any> | void> = Kit.Actions<RouteParams, OutputData, RouteId>',
+				'export type Actions<OutputData extends Record<string, any> | void = Record<string, any> | void> = Kit.Actions<RouteParams, OutputData, RouteId>'
+			);
+		}
+
+		if (route.leaf.server || proxies.worker?.exports.includes('actions')) {
+			exports.push(
 				'export type PageProps = { params: RouteParams; data: PageData; form: ActionData }'
 			);
 		} else {
@@ -317,6 +356,12 @@ function update_types(config, routes, route, root, to_delete = new Set()) {
 		declarations.push(
 			'type LayoutParams = RouteParams & ' + generate_params_type(layout_params, outdir, config)
 		);
+		if (route.layout.worker) {
+			worker_declarations.push(
+				`type LayoutRouteId = ${ids.join(' | ')}`,
+				'type LayoutParams = RouteParams & ' + generate_params_type(layout_params, outdir, config)
+			);
+		}
 
 		const {
 			exports: e,
@@ -326,9 +371,11 @@ function update_types(config, routes, route, root, to_delete = new Set()) {
 			route.layout,
 			outdir,
 			false,
-			{ server: null, universal: null },
+			{ server: null, universal: null, worker: null },
 			root,
-			all_pages_have_load
+			all_pages_have_load,
+			worker_declarations,
+			worker_exports
 		);
 
 		exports.push(...e);
@@ -336,6 +383,7 @@ function update_types(config, routes, route, root, to_delete = new Set()) {
 
 		if (proxies.server?.modified) to_delete.delete(proxies.server.file_name);
 		if (proxies.universal?.modified) to_delete.delete(proxies.universal.file_name);
+		if (proxies.worker?.modified) to_delete.delete(proxies.worker.file_name);
 
 		exports.push(
 			'export type LayoutProps = { params: LayoutParams; data: LayoutData; children: import("svelte").Snippet }'
@@ -357,6 +405,19 @@ function update_types(config, routes, route, root, to_delete = new Set()) {
 	fs.writeFileSync(`${outdir}/$types.d.ts`, output);
 	to_delete.delete('$types.d.ts');
 
+	if (worker_exports.length > 0) {
+		const worker_output = [
+			imports.join('\n'),
+			worker_declarations.join('\n'),
+			worker_exports.join('\n')
+		]
+			.filter(Boolean)
+			.join('\n\n');
+
+		fs.writeFileSync(`${outdir}/$worker-types.d.ts`, worker_output);
+		to_delete.delete('$worker-types.d.ts');
+	}
+
 	for (const file of to_delete) {
 		fs.unlinkSync(path.join(outdir, file));
 	}
@@ -369,8 +430,19 @@ function update_types(config, routes, route, root, to_delete = new Set()) {
  * @param {Proxies} proxies
  * @param {string} root The project root directory
  * @param {boolean} [all_pages_have_load]
+ * @param {string[]} [worker_declarations]
+ * @param {string[]} [worker_exports]
  */
-function process_node(node, outdir, is_page, proxies, root, all_pages_have_load = true) {
+function process_node(
+	node,
+	outdir,
+	is_page,
+	proxies,
+	root,
+	all_pages_have_load = true,
+	worker_declarations = [],
+	worker_exports = []
+) {
 	const params = `${is_page ? 'Route' : 'Layout'}Params`;
 	const prefix = is_page ? 'Page' : 'Layout';
 
@@ -384,7 +456,13 @@ function process_node(node, outdir, is_page, proxies, root, all_pages_have_load 
 	/** @type {string} */
 	let server_data;
 	/** @type {string} */
+	let worker_data = 'null';
+	/** @type {string} */
 	let data;
+	/** @type {string | null} */
+	let server_actions = null;
+	/** @type {string | null} */
+	let worker_actions = null;
 
 	ensureProxies(node, proxies, root);
 
@@ -412,35 +490,127 @@ function process_node(node, outdir, is_page, proxies, root, all_pages_have_load 
 
 		exports.push(`export type ${prefix}ServerLoadEvent = Parameters<${prefix}ServerLoad>[0];`);
 
-		if (is_page) {
-			let type = 'unknown';
-			if (proxy && proxy.exports.includes('actions')) {
-				// If the file wasn't tweaked, we can use the return type of the original file.
-				// The advantage is that type updates are reflected without saving.
-				const from = proxy.modified
-					? `./proxy${replace_ext_with_js(basename)}`
-					: path_to_original(outdir, node.server, root);
+		if (is_page && proxy?.exports.includes('actions')) {
+			// If the file wasn't tweaked, we can use the return type of the original file.
+			// The advantage is that type updates are reflected without saving.
+			const from = proxy.modified
+				? `./proxy${replace_ext_with_js(basename)}`
+				: path_to_original(outdir, node.server, root);
 
-				exports.push(
-					'type ExcludeActionFailure<T> = T extends Kit.ActionFailure<any> ? never : T extends void ? never : T;',
-					'type ActionsSuccess<T extends Record<string, (...args: any) => any>> = { [Key in keyof T]: ExcludeActionFailure<Awaited<ReturnType<T[Key]>>>; }[keyof T];',
-					'type ExtractActionFailure<T> = T extends Kit.ActionFailure<infer X>	? X extends void ? never : X : never;',
-					'type ActionsFailure<T extends Record<string, (...args: any) => any>> = { [Key in keyof T]: Exclude<ExtractActionFailure<Awaited<ReturnType<T[Key]>>>, void>; }[keyof T];',
-					`type ActionsExport = typeof import('${from}').actions`,
-					'export type SubmitFunction = Kit.SubmitFunction<Expand<ActionsSuccess<ActionsExport>>, Expand<ActionsFailure<ActionsExport>>>'
-				);
-
-				type = 'Expand<Kit.AwaitedActions<ActionsExport>> | null';
-			}
-			exports.push(`export type ActionData = ${type};`);
+			server_actions = 'ServerActionsExport';
+			exports.push(`type ServerActionsExport = typeof import('${from}').actions`);
 		}
 	} else {
 		server_data = 'null';
 	}
 	exports.push(`export type ${prefix}ServerData = ${server_data};`);
 
+	if (node.worker) {
+		const basename = path.basename(node.worker);
+		const proxy = proxies.worker;
+		if (proxy?.modified) {
+			fs.writeFileSync(`${outdir}/proxy${basename}`, proxy.code);
+		}
+
+		worker_data = get_data_type(node.worker, 'null', proxy, true);
+		const worker_data_export = `export type ${prefix}WorkerData = ${worker_data};`;
+		exports.push(worker_data_export);
+		worker_exports.push(worker_data_export);
+
+		const parent_type = `${prefix}WorkerParentData`;
+		declarations.push(
+			`type ${parent_type} = ${get_parent_type(node, (parent) =>
+				parent.worker ? 'LayoutWorkerData' : null
+			)};`
+		);
+		worker_declarations.push(
+			`type ${parent_type} = ${get_parent_type(
+				node,
+				(parent) => (parent.worker ? 'LayoutWorkerData' : null),
+				'$worker-types.js'
+			)};`
+		);
+
+		const output_data_shape =
+			node.universal || (!is_page && all_pages_have_load)
+				? 'Partial<App.PageData> & Record<string, any> | void'
+				: `OutputDataShape<${parent_type}>`;
+		const worker_load_export = `export type ${prefix}WorkerLoad<OutputData extends ${output_data_shape} = ${output_data_shape}> = Kit.WorkerLoad<${params}, ${parent_type}, OutputData, ${route_id}>;`;
+		const worker_load_event_export = `export type ${prefix}WorkerLoadEvent = Parameters<${prefix}WorkerLoad>[0];`;
+		exports.push(worker_load_export, worker_load_event_export);
+		worker_exports.push(worker_load_export, worker_load_event_export);
+
+		if (is_page) {
+			const worker_actions_export = `export type ${prefix}WorkerActions = Kit.WorkerActions<${params}, Record<string, any> | void, Record<string, any> | void, ${route_id}>;`;
+			const worker_action_event_export = `export type ${prefix}WorkerActionEvent = Parameters<${prefix}WorkerActions[string]>[0];`;
+			exports.push(worker_actions_export, worker_action_event_export);
+			worker_exports.push(worker_actions_export, worker_action_event_export);
+
+			if (proxy?.exports.includes('actions')) {
+				const from = proxy.modified
+					? `./proxy${replace_ext_with_js(basename)}`
+					: path_to_original(outdir, node.worker, root);
+
+				worker_actions = 'WorkerActionsExport';
+				exports.push(`type WorkerActionsExport = typeof import('${from}').actions`);
+			}
+		}
+	}
+
+	if (is_page && (node.server || worker_actions)) {
+		if (server_actions || worker_actions) {
+			exports.push(
+				'type OptionalActionUnion<U, A extends PropertyKey = U extends U ? keyof U : never> = U extends Record<string, any> ? { [P in Exclude<A, keyof U>]?: never } & U : U;'
+			);
+
+			/** @type {string[]} */
+			const action_data = [];
+			/** @type {string[]} */
+			const action_success = [];
+			/** @type {string[]} */
+			const action_failure = [];
+
+			if (server_actions) {
+				exports.push(
+					'type ExcludeActionFailure<T> = T extends Kit.ActionFailure<any> ? never : T extends void ? never : T;',
+					'type ActionsSuccess<T extends Record<string, (...args: any) => any>> = { [Key in keyof T]: ExcludeActionFailure<Awaited<ReturnType<T[Key]>>>; }[keyof T];',
+					'type ExtractActionFailure<T> = T extends Kit.ActionFailure<infer X> ? X extends void ? never : X : never;',
+					'type ActionsFailure<T extends Record<string, (...args: any) => any>> = { [Key in keyof T]: Exclude<ExtractActionFailure<Awaited<ReturnType<T[Key]>>>, void>; }[keyof T];'
+				);
+				action_data.push(`Kit.AwaitedActions<${server_actions}>`);
+				action_success.push(`ActionsSuccess<${server_actions}>`);
+				action_failure.push(`ActionsFailure<${server_actions}>`);
+			}
+
+			if (worker_actions) {
+				exports.push(
+					"type WorkerActionResultData<T> = 'data' extends keyof T ? T extends { data?: infer Data } ? Data : never : undefined;",
+					"type UnpackWorkerAction<T> = T extends Kit.ActionFailure<infer Data> ? Data : T extends { type: 'success' | 'failure'; status: number } ? WorkerActionResultData<T> : T extends { type: 'redirect'; status: number; location: string } ? never : T extends { type: 'error'; error: any } ? never : T extends void ? undefined : T;",
+					'type WorkerActionsData<T extends Record<string, (...args: any) => any>> = { [Key in keyof T]: UnpackWorkerAction<Awaited<ReturnType<T[Key]>>>; }[keyof T];',
+					"type ExtractWorkerActionSuccess<T> = T extends Kit.ActionFailure<any> ? never : T extends { type: 'success'; status: number } ? Exclude<WorkerActionResultData<T>, void> : T extends { type: 'failure'; status: number } | { type: 'redirect'; status: number; location: string } | { type: 'error'; error: any } ? never : T extends void ? never : T;",
+					'type WorkerActionsSuccess<T extends Record<string, (...args: any) => any>> = { [Key in keyof T]: ExtractWorkerActionSuccess<Awaited<ReturnType<T[Key]>>>; }[keyof T];',
+					"type ExtractWorkerActionFailure<T> = T extends Kit.ActionFailure<infer Data> ? Exclude<Data, void> : T extends { type: 'failure'; status: number } ? Exclude<WorkerActionResultData<T>, void> : never;",
+					'type WorkerActionsFailure<T extends Record<string, (...args: any) => any>> = { [Key in keyof T]: ExtractWorkerActionFailure<Awaited<ReturnType<T[Key]>>>; }[keyof T];'
+				);
+				action_data.push(`WorkerActionsData<${worker_actions}>`);
+				action_success.push(`WorkerActionsSuccess<${worker_actions}>`);
+				action_failure.push(`WorkerActionsFailure<${worker_actions}>`);
+			}
+
+			exports.push(
+				`export type ActionData = Expand<OptionalActionUnion<${action_data.join(' | ')}>> | null;`,
+				`export type SubmitFunction = Kit.SubmitFunction<Expand<${action_success.join(' | ')}>, Expand<${action_failure.join(' | ')}>>;`
+			);
+		} else {
+			exports.push('export type ActionData = unknown;');
+		}
+	}
+
 	const parent_type = `${prefix}ParentData`;
 	declarations.push(`type ${parent_type} = ${get_parent_type(node, 'LayoutData')};`);
+	const server_like_data = node.worker
+		? `${prefix}ServerData | ${prefix}WorkerData`
+		: `${prefix}ServerData`;
 
 	if (node.universal) {
 		const proxy = proxies.universal;
@@ -450,7 +620,7 @@ function process_node(node, outdir, is_page, proxies, root, all_pages_have_load 
 
 		const type = get_data_type(
 			node.universal,
-			`${parent_type} & EnsureDefined<${prefix}ServerData>`,
+			`${parent_type} & EnsureDefined<${server_like_data}>`,
 			proxy
 		);
 
@@ -461,12 +631,14 @@ function process_node(node, outdir, is_page, proxies, root, all_pages_have_load 
 				? 'Partial<App.PageData> & Record<string, any> | void'
 				: `OutputDataShape<${parent_type}>`;
 		exports.push(
-			`export type ${prefix}Load<OutputData extends ${output_data_shape} = ${output_data_shape}> = Kit.Load<${params}, ${prefix}ServerData, ${parent_type}, OutputData, ${route_id}>;`
+			`export type ${prefix}Load<OutputData extends ${output_data_shape} = ${output_data_shape}> = Kit.Load<${params}, ${server_like_data}, ${parent_type}, OutputData, ${route_id}>;`
 		);
 
 		exports.push(`export type ${prefix}LoadEvent = Parameters<${prefix}Load>[0];`);
-	} else if (server_data === 'null') {
+	} else if (server_data === 'null' && worker_data === 'null') {
 		data = `Expand<${parent_type}>`;
+	} else if (worker_data !== 'null') {
+		data = `Expand<Omit<${parent_type}, keyof ${prefix}ServerData | keyof ${prefix}WorkerData> & OptionalUnion<EnsureDefined<${server_like_data}>>>`;
 	} else {
 		data = `Expand<Omit<${parent_type}, keyof ${prefix}ServerData> & EnsureDefined<${prefix}ServerData>>`;
 	}
@@ -518,16 +690,26 @@ function ensureProxies(node, proxies, root) {
 	if (node.universal && !proxies.universal) {
 		proxies.universal = createProxy(node.universal, false, root);
 	}
+
+	if (node.worker && !proxies.worker) {
+		proxies.worker = createProxy(node.worker, false, root, true);
+	}
 }
 
 /**
  * @param {string} file_path
  * @param {boolean} is_server
  * @param {string} root The project root directory
+ * @param {boolean} [is_worker]
  * @returns {Proxy}
  */
-function createProxy(file_path, is_server, root) {
-	const proxy = tweak_types(fs.readFileSync(path.resolve(root, file_path), 'utf8'), is_server);
+function createProxy(file_path, is_server, root, is_worker = false) {
+	const proxy = tweak_types(
+		fs.readFileSync(path.resolve(root, file_path), 'utf8'),
+		is_server,
+		is_worker,
+		file_path.endsWith('.ts')
+	);
 	if (proxy) {
 		return {
 			...proxy,
@@ -541,19 +723,22 @@ function createProxy(file_path, is_server, root) {
 /**
  * Get the parent type string by recursively looking up the parent layout and accumulate them to one type.
  * @param {import('types').PageNode} node
- * @param {string} type
+ * @param {string | ((node: import('types').PageNode) => string | null)} type
+ * @param {string} [module]
  */
-function get_parent_type(node, type) {
+function get_parent_type(node, type, module = '$types.js') {
 	const parent_imports = [];
 
 	let parent = node.parent;
 
 	while (parent) {
 		const d = node.depth - parent.depth;
-		// unshift because we need it the other way round for the import string
-		parent_imports.unshift(
-			`${d === 0 ? '' : `import('${'../'.repeat(d)}${'$types.js'}').`}${type}`
-		);
+		const parent_type = typeof type === 'function' ? type(parent) : type;
+		if (parent_type) {
+			const prefix = d === 0 ? '' : `import('${'../'.repeat(d)}${module}').`;
+			// unshift because we need it the other way round for the import string
+			parent_imports.unshift(`${prefix}${parent_type}`);
+		}
 		parent = parent.parent;
 	}
 
@@ -619,10 +804,12 @@ function generate_params_type(params, outdir, config) {
 /**
  * @param {string} content
  * @param {boolean} is_server
+ * @param {boolean} [is_worker]
+ * @param {boolean} [is_typescript]
  * @returns {Omit<NonNullable<Proxy>, 'file_name'> | null}
  */
-export function tweak_types(content, is_server) {
-	const names = new Set(is_server ? ['load', 'actions'] : ['load']);
+export function tweak_types(content, is_server, is_worker = false, is_typescript = false) {
+	const names = new Set(is_server || is_worker ? ['load', 'actions'] : ['load']);
 
 	try {
 		let modified = false;
@@ -807,11 +994,86 @@ export function tweak_types(content, is_server) {
 							}
 						}
 					} else if (
-						is_server &&
+						(is_server || is_worker) &&
 						ts.isIdentifier(declaration.name) &&
 						declaration.name?.text === 'actions' &&
 						declaration.initializer
 					) {
+						if (is_worker && ts.isObjectLiteralExpression(declaration.initializer)) {
+							/** @type {import('typescript').FunctionLikeDeclaration[]} */
+							const action_functions = [];
+
+							for (const property of declaration.initializer.properties) {
+								if (ts.isMethodDeclaration(property)) {
+									action_functions.push(property);
+								} else if (
+									ts.isPropertyAssignment(property) &&
+									(ts.isArrowFunction(property.initializer) ||
+										ts.isFunctionExpression(property.initializer))
+								) {
+									action_functions.push(property.initializer);
+								}
+							}
+
+							/** @type {Set<number>} */
+							const preserved = new Set();
+							for (const fn of action_functions) {
+								/** @type {import('typescript').Expression[]} */
+								const expressions = [];
+								if (ts.isArrowFunction(fn) && !ts.isBlock(fn.body)) {
+									expressions.push(fn.body);
+								} else if (fn.body && ts.isBlock(fn.body)) {
+									/** @type {import('typescript').Node[]} */
+									const nodes = [...fn.body.statements];
+									while (nodes.length > 0) {
+										const current = /** @type {import('typescript').Node} */ (nodes.pop());
+										if (ts.isFunctionLike(current)) continue;
+										if (ts.isReturnStatement(current) && current.expression) {
+											expressions.push(current.expression);
+											continue;
+										}
+										nodes.push(...current.getChildren(ast));
+									}
+								}
+
+								while (expressions.length > 0) {
+									let expression = /** @type {import('typescript').Expression} */ (
+										expressions.pop()
+									);
+									while (ts.isParenthesizedExpression(expression)) {
+										expression = expression.expression;
+									}
+									if (ts.isConditionalExpression(expression)) {
+										expressions.push(expression.whenTrue, expression.whenFalse);
+										continue;
+									}
+									if (!ts.isObjectLiteralExpression(expression)) continue;
+
+									for (const property of expression.properties) {
+										if (
+											ts.isPropertyAssignment(property) &&
+											property.name.getText(ast) === 'type' &&
+											ts.isStringLiteral(property.initializer) &&
+											['success', 'failure', 'redirect', 'error'].includes(
+												property.initializer.text
+											) &&
+											!preserved.has(property.initializer.pos)
+										) {
+											preserved.add(property.initializer.pos);
+											const start = property.initializer.getStart(ast);
+											if (is_typescript) {
+												code.appendLeft(property.initializer.end, ' as const');
+											} else {
+												code.prependRight(start, '/** @type {const} */ (');
+												code.appendLeft(property.initializer.end, ')');
+											}
+											modified = true;
+										}
+									}
+								}
+							}
+						}
+
 						// remove JSDoc comment from `export const actions = ..`
 						const removed = replace_jsdoc_type_tags(node, declaration.initializer);
 						// ... and move type to each individual action
@@ -830,7 +1092,7 @@ export function tweak_types(content, is_server) {
 										: 'event';
 									code.prependRight(
 										rhs.pos,
-										`/** @param {import('./$types').RequestEvent} ${name} */ `
+										`/** @param {import('./${is_worker ? '$worker-types' : '$types'}').${is_worker ? 'PageWorkerActionEvent' : 'RequestEvent'}} ${name} */ `
 									);
 								}
 							});
@@ -842,7 +1104,10 @@ export function tweak_types(content, is_server) {
 
 							// ... and move type to each individual action
 							for_each_action(declaration.initializer, (prop) => {
-								annotate_first_param(prop.initializer, "import('./$types').RequestEvent");
+								annotate_first_param(
+									prop.initializer,
+									`import('./${is_worker ? '$worker-types' : '$types'}').${is_worker ? 'PageWorkerActionEvent' : 'RequestEvent'}`
+								);
 							});
 						}
 					}

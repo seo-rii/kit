@@ -12,7 +12,7 @@ In SvelteKit, if you have a `src/service-worker/index.ts` file it will be bundle
 
 For the service worker to do anything useful, you will likely need to import some stuff:
 
-- [`$app/service-worker`]($app-service-worker) exports `self` which is just `globalThis` typed as [`ServiceWorkerGlobalScope`](https://developer.mozilla.org/en-US/docs/Web/API/ServiceWorkerGlobalScope) (provided you follow [these steps](#Type-safety)), so that your `fetch` events are typed correctly
+- [`$app/service-worker`]($app-service-worker) exports `self` which is just `globalThis` typed as [`ServiceWorkerGlobalScope`](https://developer.mozilla.org/en-US/docs/Web/API/ServiceWorkerGlobalScope) (provided you follow [these steps](#Type-safety)), so that your `fetch` events are typed correctly. It also exports the experimental [`resolve`](#Fallback-route-data) function for route-aware fallbacks
 - [`$app/env`]($app-env) exports `version`, which is useful for creating deployment-scoped caches
 - [`$app/manifest`]($app-manifest) exports `immutable` build files, your `assets`, and any `prerendered` content, allowing you to populate your caches
 
@@ -106,6 +106,163 @@ self.addEventListener('fetch', (event) => {
 ```
 
 > [!NOTE] Be careful when caching! In some cases, stale data might be worse than data that's unavailable while offline. Since browsers will empty caches if they get too full, you should also be careful about caching large assets like video files.
+
+## Fallback route data
+
+> [!NOTE] This API is experimental and may change.
+
+Enable worker fallbacks in your SvelteKit Vite plugin configuration:
+
+```js
+/// file: vite.config.js
+import { sveltekit } from '@sveltejs/kit/vite';
+import { defineConfig } from 'vite';
+
+export default defineConfig({
+	plugins: [
+		sveltekit({
+			experimental: {
+				serviceWorkerFallbacks: true
+			}
+		})
+	]
+});
+```
+
+If a route uses `+layout.server.js` or `+page.server.js`, client-side navigation needs a SvelteKit data request to reach the server. A service worker can use `resolve` from `$app/service-worker` together with [`+layout.worker.js`](routing#layout-layout.worker.js) and [`+page.worker.js`](routing#page-page.worker.js) to provide fallback route data when that data request fails, while keeping SSR enabled for normal requests.
+
+This API handles SvelteKit data requests made during client-side navigation and requests from [enhanced form actions](form-actions#Progressive-enhancement). It does not render uncached document navigations, handle `+server.js` endpoints or arbitrary fetch requests, or intercept unenhanced form submissions. Continue to use `src/service-worker.js` for caching, asset requests and other service-worker behavior.
+
+```js
+/// file: src/service-worker/index.js
+import { resolve, self } from '$app/service-worker';
+
+self.addEventListener('fetch', (event) => {
+	if (event.request.method === 'POST' && event.request.headers.get('x-sveltekit-action') === 'true') {
+		event.respondWith(resolve(event));
+		return;
+	}
+
+	if (event.request.method !== 'GET') return;
+
+	event.respondWith(
+		fetch(event.request).catch(async () => {
+			const cached = await caches.match(event.request);
+			return cached ?? resolve(event, { strategy: 'worker-first' });
+		})
+	);
+});
+```
+
+### Worker modules
+
+Add worker modules next to the layouts and pages that need fallback data. They are bundled into the service worker and delivered to the browser, so they must not contain secrets or import server-only modules. Modules that are not available inside a service worker, such as `$app/forms`, `$app/navigation` and `$app/state`, cannot be imported by worker modules or anything they depend on.
+
+```js
+/// file: src/routes/products/+layout.worker.js
+/// <reference no-default-lib="true"/>
+/// <reference lib="esnext" />
+/// <reference lib="webworker" />
+
+/** @type {import('./$worker-types').LayoutWorkerLoad} */
+export async function load({ network }) {
+	return {
+		categories: network.status === 'offline' ? [] : ['featured']
+	};
+}
+```
+
+```js
+/// file: src/routes/products/+page.worker.js
+/// <reference no-default-lib="true"/>
+/// <reference lib="esnext" />
+/// <reference lib="webworker" />
+
+/** @type {import('./$worker-types').PageWorkerLoad} */
+export async function load({ network, parent, route }) {
+	const { categories } = await parent();
+
+	return {
+		route: route.id,
+		stale: true,
+		categories,
+		products: Promise.resolve([])
+	};
+}
+```
+
+Worker page modules can also provide fallback responses for enhanced form actions:
+
+```js
+/// file: src/routes/products/+page.worker.js
+/// <reference no-default-lib="true"/>
+/// <reference lib="esnext" />
+/// <reference lib="webworker" />
+
+/** @type {import('./$worker-types').PageWorkerActions} */
+export const actions = {
+	async checkout({ network, request }) {
+		const form = await request.formData();
+
+		if (network.status === 'offline') {
+			return {
+				type: 'failure',
+				status: 503,
+				data: {
+					offline: true,
+					sku: form.get('sku')
+				}
+			};
+		}
+
+		return {
+			queued: true,
+			sku: form.get('sku')
+		};
+	}
+};
+```
+
+### Type checking
+
+SvelteKit generates `$worker-types.d.ts` next to the usual route `$types.d.ts`, along with `.svelte-kit/tsconfig.worker.json`. The worker config extends `$app/tsconfig/service-worker`, uses the `WebWorker` library and does not automatically include `@types` packages. It is a separate TypeScript program because DOM and worker globals cannot safely coexist in the app program. Run it explicitly in addition to your normal checks:
+
+```sh
+npx tsc -p .svelte-kit/tsconfig.worker.json
+```
+
+The generated `$app/tsconfig` excludes route worker modules from the application TypeScript program. If your root `tsconfig.json` overrides `exclude`, also exclude `src/routes/**/+page.worker.*` and `src/routes/**/+layout.worker.*`.
+
+If you use a custom [`outDir`](configuration#outDir), replace `.svelte-kit` with that directory.
+
+### Resolution strategies
+
+`resolve(event)` is network-first by default. It only runs matching worker loads or actions when `fetch(event.request)` rejects, such as during a network or CORS failure. The fetch promise still resolves for an HTTP error response such as `404` or `503`, so that response is returned without running the worker fallback.
+
+You can use `resolve(event, { strategy: 'worker-first' })` if your service worker already knows it should prefer fallback data. Worker-first resolution runs matching worker loads or actions before attempting the server, and fetches from the server if the worker modules cannot produce a response for the request.
+
+### Worker events
+
+Worker loads receive the usual navigation properties such as `params`, `route` and `url`, along with the following properties:
+
+- `request` — the original SvelteKit data request
+- `network` — a best-effort connectivity hint whose `status` is `'online'`, `'offline'` or `'unknown'`; it is based on `navigator.onLine` and does not guarantee that the server is reachable
+- `parent()` — returns fallback data from parent worker layouts that ran for the current request
+- `server({ timeout, signal })` — retries the original SvelteKit data request and returns the raw `Response`; `timeout` is measured in milliseconds and `signal` is an `AbortSignal`
+
+Worker action events additionally provide `action`, containing the selected action name. Their `request` contains the submitted form data, and their `server` method retries the original enhanced action request.
+
+The `server` response uses SvelteKit's internal data or action response format. It is intended for custom retry and response handling — do not return `await response.json()` directly as worker load or action data.
+
+### Actions, hooks and serialization
+
+Worker action names follow the same rules as server actions: a `default` action cannot be mixed with named actions. If a requested action is not present in the worker module, the resolver does not fabricate a worker result — worker-first resolution continues to the server, while network-first resolution preserves the original network failure. Actions can return a plain object for success, an `ActionFailure` created with [`fail`](@sveltejs-kit#fail), or an [`ActionResult`](@sveltejs-kit#ActionResult). Failure and error results use their actual HTTP status, and an action that returns no data produces an empty `204` response.
+
+The resolver applies the universal [`reroute`](hooks#Universal-hooks-reroute) hook before matching a worker route and uses the universal [`transport`](hooks#Universal-hooks-transport) encoders for worker data, streamed promises and action data. There is no dedicated service-worker `handle`, `handleFetch` or `handleError` hook. Because `src/hooks.js` is included in the service-worker bundle when these universal hooks are used, its imports must also be safe to run in a service worker.
+
+Worker data replaces the matching layout or page server data for that request. If an invalidated server layout or page does not have a corresponding worker module, the resolver leaves the original network failure in place instead of returning partial route data. Promises returned from worker loads are streamed using SvelteKit's data response format, so `{#await data.products}` continues to work during client navigation.
+
+Worker loads cannot replace universal `+layout.js` or `+page.js` loads, and worker actions only run for enhanced SvelteKit action requests.
 
 ## Type safety
 

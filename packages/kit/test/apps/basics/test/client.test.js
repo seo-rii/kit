@@ -1,5 +1,6 @@
 import process from 'node:process';
 import { expect } from '@playwright/test';
+import * as devalue from 'devalue';
 import { test } from '../../../utils.js';
 
 /** @typedef {import('@playwright/test').Response} Response */
@@ -29,6 +30,256 @@ test.describe('Caching', () => {
 			)
 		]);
 		expect(response.headers()['cache-control']).toBe('public, max-age=30');
+	});
+});
+
+test.describe('service worker data fallback', () => {
+	test.beforeEach(async ({ page }) => {
+		test.slow();
+		test.skip(!!process.env.DEV, 'service worker build assets are empty in dev mode');
+
+		await page.context().addCookies([
+			{
+				name: 'dev_bypass_waf',
+				value: 'seorii_bypass_token_is_this',
+				domain: 'localhost',
+				path: '/'
+			}
+		]);
+		await page.goto('/worker-fallback/start');
+		await page.evaluate(() => navigator.serviceWorker.ready);
+		await page.reload();
+		expect(await page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
+	});
+
+	test('renders layout and page data from worker modules when the service worker uses worker-first data', async ({
+		app,
+		page
+	}) => {
+		await app.goto('/worker-fallback/target');
+		await expect(page.locator('h1')).toHaveText('worker data for /worker-fallback/target');
+		await expect(page.locator('#layout-source')).toHaveText('layout-worker');
+		await expect(page.locator('#layout-network')).toHaveText('online');
+		await expect(page.locator('#layout-seen')).toHaveText('layout-worker');
+		await expect(page.locator('#source')).toHaveText('worker');
+		await expect(page.locator('#path')).toHaveText('/worker-fallback/target');
+		await expect(page.locator('#tracked')).toHaveText('none');
+		await expect(page.locator('#stale')).toHaveText('true');
+		await expect(page.locator('#network')).toHaveText('online');
+
+		/** @type {{ invalidated: string, body: { nodes: Array<{ type?: string, data?: any[], uses?: Record<string, any> } | null> } } | undefined} */
+		const partial = await page.evaluate(async () => {
+			for (const invalidated of ['01', '001', '0001', '00001']) {
+				const response = await fetch(
+					`/worker-fallback/target/__data.json?tracked=partial&x-sveltekit-invalidated=${invalidated}`
+				);
+				const text = await response.text();
+				if (response.headers.get('x-sveltekit-worker') === '1' && text.includes('layoutSeen')) {
+					return { invalidated, body: JSON.parse(text) };
+				}
+			}
+		});
+
+		expect(partial).toBeDefined();
+		expect(partial?.body.nodes.some((node) => node?.type === 'skip')).toBe(true);
+
+		const page_node = partial?.body.nodes.find((node) => {
+			return node?.type === 'data' && JSON.stringify(node.data).includes('layoutSeen');
+		});
+
+		expect(page_node?.data).toContain('layout-worker');
+		expect(page_node?.data).toContain('partial');
+		expect(page_node?.uses).toEqual({
+			parent: 1,
+			route: 1,
+			search_params: ['tracked'],
+			url: 1
+		});
+
+		/** @type {{ nodes: Array<{ type?: string, data?: any[] } | null> } | undefined} */
+		const matcher = await page.evaluate(async () => {
+			for (const invalidated of ['01', '001', '0001', '00001']) {
+				const response = await fetch(
+					`/worker-fallback/matched/abc/__data.json?x-sveltekit-invalidated=${invalidated}`,
+					{
+						headers: { 'x-test-worker-fallback': '1' }
+					}
+				);
+				if (response.headers.get('x-sveltekit-worker') === '1') {
+					return response.json();
+				}
+			}
+		});
+
+		expect(matcher).toBeDefined();
+		expect(matcher?.nodes.find((node) => node?.type === 'data')?.data).toContain('slug');
+
+		/** @type {{ nodes: Array<{ type?: string, data?: any[] } | null> } | undefined} */
+		const numeric_matcher = await page.evaluate(async () => {
+			for (const invalidated of ['01', '001', '0001', '00001']) {
+				const response = await fetch(
+					`/worker-fallback/matched/123/__data.json?x-sveltekit-invalidated=${invalidated}`,
+					{
+						headers: { 'x-test-worker-fallback': '1' }
+					}
+				);
+				if (response.headers.get('x-sveltekit-worker') === '1') {
+					return response.json();
+				}
+			}
+		});
+
+		expect(numeric_matcher).toBeDefined();
+		const numeric_data = numeric_matcher?.nodes.find((node) => node?.type === 'data')?.data;
+		expect(numeric_data).toContain('numeric');
+		expect(numeric_data).toContain(123);
+
+		await app.goto('/worker-fallback/streaming');
+		await expect(page.locator('p.eager')).toHaveText('worker eager');
+		await expect(page.locator('p.loading')).toBeVisible();
+		await expect(page.locator('p.failed-loading')).toBeVisible();
+		await expect(page.locator('p.streamed')).toHaveText('worker streamed');
+		await expect(page.locator('p.loading')).toBeHidden();
+		await expect(page.locator('p.failed-error')).toHaveText('worker rejected');
+		await expect(page.locator('p.failed-loading')).toBeHidden();
+
+		const action = await page.evaluate(async () => {
+			const response = await fetch('/worker-fallback/target?/submit', {
+				method: 'POST',
+				headers: {
+					accept: 'application/json',
+					'content-type': 'application/x-www-form-urlencoded',
+					'x-sveltekit-action': 'true',
+					'x-test-worker-fallback': '1'
+				},
+				body: new URLSearchParams({ message: 'offline action' })
+			});
+
+			return {
+				status: response.status,
+				worker: response.headers.get('x-sveltekit-worker'),
+				version: response.headers.get('x-sveltekit-version'),
+				body: await response.json()
+			};
+		});
+
+		expect(action.status).toBe(422);
+		expect(action.worker).toBe('1');
+		expect(action.version).toBe('TEST_VERSION');
+		expect(action.body.type).toBe('failure');
+		expect(action.body.status).toBe(422);
+		expect(devalue.parse(action.body.data)).toEqual({
+			action: 'submit',
+			message: 'offline action',
+			network: 'online',
+			route: '/worker-fallback/target'
+		});
+
+		const action_shape = await page.evaluate(async () => {
+			const response = await fetch('/worker-fallback/target?/shape', {
+				method: 'POST',
+				headers: {
+					accept: 'application/json',
+					'content-type': 'application/x-www-form-urlencoded',
+					'x-sveltekit-action': 'true',
+					'x-test-worker-fallback': '1'
+				},
+				body: new URLSearchParams({ message: 'plain action data' })
+			});
+
+			return {
+				status: response.status,
+				worker: response.headers.get('x-sveltekit-worker'),
+				body: await response.json()
+			};
+		});
+
+		expect(action_shape.status).toBe(200);
+		expect(action_shape.worker).toBe('1');
+		expect(action_shape.body.type).toBe('success');
+		expect(action_shape.body.status).toBe(200);
+		expect(devalue.parse(action_shape.body.data)).toEqual({
+			type: 'error',
+			status: 200,
+			message: 'plain action data'
+		});
+
+		const empty_action = await page.evaluate(async () => {
+			const response = await fetch('/worker-fallback/target?/empty', {
+				method: 'POST',
+				headers: {
+					accept: 'application/json',
+					'content-type': 'application/x-www-form-urlencoded',
+					'x-sveltekit-action': 'true',
+					'x-test-worker-fallback': '1'
+				},
+				body: new URLSearchParams()
+			});
+
+			return {
+				status: response.status,
+				worker: response.headers.get('x-sveltekit-worker'),
+				version: response.headers.get('x-sveltekit-version'),
+				body: await response.text()
+			};
+		});
+
+		expect(empty_action).toEqual({
+			status: 204,
+			worker: '1',
+			version: 'TEST_VERSION',
+			body: ''
+		});
+
+		const server_action = await page.evaluate(async () => {
+			const response = await fetch('/worker-fallback/target?/serverOnly', {
+				method: 'POST',
+				headers: {
+					accept: 'application/json',
+					'content-type': 'application/x-www-form-urlencoded',
+					'x-sveltekit-action': 'true',
+					'x-test-worker-fallback': '1'
+				},
+				body: new URLSearchParams()
+			});
+
+			return {
+				worker: response.headers.get('x-sveltekit-worker'),
+				body: await response.json()
+			};
+		});
+
+		expect(server_action.worker).toBeNull();
+		expect(server_action.body.type).toBe('success');
+		expect(devalue.parse(server_action.body.data)).toEqual({ source: 'server-action' });
+	});
+
+	test('falls back through the default network-first strategy while offline', async ({
+		app,
+		page
+	}) => {
+		await page.context().setOffline(true);
+
+		try {
+			await app.goto('/worker-fallback/network-first');
+			await expect(page.locator('h1')).toHaveText('network-first-worker');
+			await expect(page.locator('#network')).toHaveText('offline');
+		} finally {
+			await page.context().setOffline(false);
+		}
+	});
+
+	test('applies reroute before resolving an offline worker route', async ({ app, page }) => {
+		await page.context().setOffline(true);
+
+		try {
+			await app.goto('/worker-fallback/reroute-visible');
+			await expect(page).toHaveURL('/worker-fallback/reroute-visible');
+			await expect(page.locator('h1')).toHaveText('rerouted-worker');
+			await expect(page.locator('#route')).toHaveText('/worker-fallback/reroute-target');
+		} finally {
+			await page.context().setOffline(false);
+		}
 	});
 });
 

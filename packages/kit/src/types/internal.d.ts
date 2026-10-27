@@ -220,6 +220,8 @@ export interface PageNode {
 	universal?: string;
 	/** The `+page/layout.server.js/ts`. */
 	server?: string;
+	/** The `+page.worker.js/ts` or `+layout.worker.js/ts`. */
+	worker?: string;
 	parent_id?: string;
 	parent?: PageNode;
 	/** Filled with the pages that reference this layout (if this is a layout). */
