@@ -538,6 +538,66 @@ test('counts upstream Age and Date toward max-age', async () => {
 	await expect(handle(new Request(query_url))).rejects.toBe(offline_error);
 });
 
+test('does not reuse a response that became stale in transit despite a future Date', async () => {
+	vi.useFakeTimers();
+	const started_at = Date.parse('2026-10-27T00:00:00Z');
+	vi.setSystemTime(started_at);
+	const { storage, operations } = memory_storage();
+	const network = deferred();
+	const response = cacheable('already stale', {
+		age: '50',
+		date: 'Tue, 27 Oct 2026 00:00:30 GMT'
+	});
+	const fetch = vi.fn().mockReturnValueOnce(network.promise).mockRejectedValue(offline_error);
+	const { handle } = create(fetch, storage);
+	const pending = handle(new Request(query_url));
+	vi.setSystemTime(started_at + 20_000);
+	network.resolve(response);
+	expect(await pending).toBe(response);
+	vi.setSystemTime(started_at + 21_000);
+	await expect(handle(new Request(query_url))).rejects.toBe(offline_error);
+	expect(operations).not.toContain('put');
+});
+
+test.each([
+	{ age: '10', date: 'Tue, 27 Oct 2026 00:00:30 GMT' },
+	{ age: '1', date: 'Mon, 26 Oct 2026 23:59:50 GMT' }
+])('persists corrected age and counts body download time once for %j', async (headers) => {
+	vi.useFakeTimers();
+	const started_at = Date.parse('2026-10-27T00:00:00Z');
+	vi.setSystemTime(started_at);
+	const { storage } = memory_storage();
+	const network = deferred();
+	const stream = streamed_response();
+	stream.response.headers.set('age', headers.age);
+	stream.response.headers.set('date', headers.date);
+	const fetch = vi.fn().mockReturnValueOnce(network.promise).mockRejectedValue(offline_error);
+	const { handle } = create(fetch, storage);
+	const pending = handle(new Request(query_url));
+	vi.setSystemTime(started_at + 1_250);
+	network.resolve(stream.response);
+	await stream.reading;
+	vi.setSystemTime(started_at + 2_750);
+	stream.finish('delayed value');
+	expect(await pending).toBe(stream.response);
+	expect(stream.response.headers.get('age')).toBe(headers.age);
+	expect(stream.response.headers.get('date')).toBe(headers.date);
+	expect(await stream.response.text()).toBe('delayed value');
+
+	// A new coordinator must recover the corrected age entirely from persisted metadata.
+	const restored = create(fetch, storage);
+	vi.setSystemTime(started_at + 4_250);
+	const fallback = await restored.handle(new Request(query_url));
+	expect(fallback.headers.get('age')).toBe('14');
+	expect(fallback.headers.has('x-sveltekit-offline-stored-at')).toBe(false);
+	expect(fallback.headers.has('x-sveltekit-offline-initial-age')).toBe(false);
+	expect(await fallback.text()).toBe('delayed value');
+	vi.setSystemTime(started_at + 49_999);
+	expect((await restored.handle(new Request(query_url))).headers.get('age')).toBe('59');
+	vi.setSystemTime(started_at + 50_000);
+	await expect(restored.handle(new Request(query_url))).rejects.toBe(offline_error);
+});
+
 test('isolates account scopes, deployment versions, query payloads, and Vary headers', async () => {
 	const { storage } = memory_storage();
 	const fetch = vi

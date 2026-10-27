@@ -1,6 +1,7 @@
 /** @import { RemoteCache, RemoteCacheOptions } from './remote-public.js' */
 
 const stored_at_header = 'x-sveltekit-offline-stored-at';
+const initial_age_header = 'x-sveltekit-offline-initial-age';
 
 /**
  * Cache explicitly opted-in remote reads without interpreting SvelteKit's payload format.
@@ -96,10 +97,15 @@ export function createRemoteCache({
 			/** @type {ArrayBuffer | null} */
 			let body = null;
 			try {
+				const requested_at = Date.now();
 				response = await fetch(network_request);
 				request.signal.throwIfAborted();
 				received_at = Date.now();
-				freshness = get_freshness(response, received_at);
+				freshness = get_freshness(
+					response,
+					received_at,
+					get_initial_age(response, requested_at, received_at)
+				);
 				if (!freshness && is_current_generation()) {
 					// Fence existing reads before awaiting storage, including pending cache matches.
 					// Revocation deletes every Vary variant, so they share the same generation.
@@ -124,7 +130,9 @@ export function createRemoteCache({
 
 					const timestamp = match.headers.get(stored_at_header);
 					const stored_at = timestamp === null ? NaN : Number(timestamp);
-					const freshness = get_freshness(match, stored_at);
+					const initial_age = match.headers.get(initial_age_header);
+					const age = initial_age !== null && /^\d+$/.test(initial_age) ? Number(initial_age) : NaN;
+					const freshness = get_freshness(match, stored_at, age);
 					const now = Date.now();
 					if (!freshness || now < stored_at || now >= freshness.expires_at) {
 						await cache.delete(cache_request, { ignoreVary: true });
@@ -133,6 +141,7 @@ export function createRemoteCache({
 
 					const headers = new Headers(match.headers);
 					headers.delete(stored_at_header);
+					headers.delete(initial_age_header);
 					headers.set('age', String(Math.floor((freshness.age + now - stored_at) / 1000)));
 					return new Response(match.body, {
 						status: match.status,
@@ -157,6 +166,8 @@ export function createRemoteCache({
 
 				const headers = new Headers(response.headers);
 				headers.set(stored_at_header, String(received_at));
+				// Keep millisecond precision without changing the network response's Age header.
+				headers.set(initial_age_header, String(freshness.age));
 				await cache.put(
 					cache_request,
 					new Response(body, { status: response.status, statusText: response.statusText, headers })
@@ -176,10 +187,18 @@ export function createRemoteCache({
 /**
  * @param {Response} response
  * @param {number} received_at
+ * @param {number} age Corrected initial age at receipt, in milliseconds.
  * @returns {{ expires_at: number; age: number } | null}
  */
-function get_freshness(response, received_at) {
-	if (!Number.isFinite(received_at) || !response.ok || response.status === 206) return null;
+function get_freshness(response, received_at, age) {
+	if (
+		!Number.isFinite(received_at) ||
+		!Number.isFinite(age) ||
+		age < 0 ||
+		!response.ok ||
+		response.status === 206
+	)
+		return null;
 	if (
 		response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase() ===
 		'text/event-stream'
@@ -202,16 +221,25 @@ function get_freshness(response, received_at) {
 	const max_age = match ? Number(match[1] ?? match[2]) : 0;
 	if (!Number.isSafeInteger(max_age) || max_age <= 0) return null;
 
+	const expires_at = received_at + max_age * 1000 - age;
+	return Number.isFinite(expires_at) && expires_at > received_at ? { expires_at, age } : null;
+}
+
+/**
+ * @param {Response} response
+ * @param {number} requested_at
+ * @param {number} received_at
+ */
+function get_initial_age(response, requested_at, received_at) {
 	const age_header = response.headers.get('age');
-	if (age_header !== null && !/^\d+$/.test(age_header)) return null;
-	let age = Number(age_header ?? 0) * 1000;
+	if (age_header !== null && !/^\d+$/.test(age_header)) return NaN;
+	// RFC 9111: Age is relative to request initiation, including when Date is ahead of us.
+	let age = Number(age_header ?? 0) * 1000 + Math.max(0, received_at - requested_at);
 	const date_header = response.headers.get('date');
 	if (date_header !== null) {
 		const date = Date.parse(date_header);
-		if (!Number.isFinite(date)) return null;
+		if (!Number.isFinite(date)) return NaN;
 		age = Math.max(age, received_at - date);
 	}
-
-	const expires_at = received_at + max_age * 1000 - age;
-	return Number.isFinite(expires_at) && expires_at > received_at ? { expires_at, age } : null;
+	return age;
 }
