@@ -1,7 +1,8 @@
 import * as devalue from 'devalue';
 import { compact } from '../../../utils/array.js';
 import { create_async_iterator } from '../../../utils/streaming.js';
-import { serialize_uses, throw_devalue_error } from '../utils.js';
+import { throw_devalue_error } from '../utils.js';
+import { create_data_serializer, serialize_uses } from '../../shared/serialize_data.js';
 import { handle_error_and_jsonify } from '../errors.js';
 import { encoders } from '#app/internal/transport';
 import { capture_error } from '../../../messages/internal/server.js';
@@ -132,92 +133,21 @@ export function server_data_serializer(event, state) {
  * @returns {import('./types.js').ServerDataSerializerJson}
  */
 export function server_data_serializer_json(event, state) {
-	let promise_id = 1;
-
-	const iterator = create_async_iterator();
-
-	const reducers = {
-		...encoders,
-		/** @param {any} thing */
-		Promise: (thing) => {
-			if (typeof thing?.then !== 'function') {
-				return;
-			}
-
-			const id = promise_id++;
-
-			/** @type {'data' | 'error'} */
-			let key = 'data';
-
-			const promise = thing
-				.catch(
-					/** @param {any} error */ async (error) => {
-						key = 'error';
-						return handle_error_and_jsonify(event, state, error);
-					}
-				)
-				.then(
-					/** @param {any} value */
-					async (value) => {
-						let str;
-						try {
-							str = devalue.stringify(value, reducers);
-						} catch (serialization_error) {
-							const error = await handle_error_and_jsonify(
-								event,
-								state,
-								capture_error(() =>
-									e.load_promise_not_serializable(
-										{ id: /** @type {string} */ (event.route.id) },
-										{ cause: serialization_error }
-									)
-								)
-							);
-
-							key = 'error';
-							str = devalue.stringify(error, reducers);
-						}
-
-						return `{"type":"chunk","id":${id},"${key}":${str}}\n`;
-					}
-				);
-
-			iterator.add(promise);
-
-			return id;
-		}
-	};
-
-	const strings = /** @type {string[]} */ ([]);
-
-	return {
-		add_node(i, node) {
-			try {
-				if (!node) {
-					strings[i] = 'null';
-					return;
-				}
-
-				if (node.type === 'error' || node.type === 'skip') {
-					strings[i] = JSON.stringify(node);
-					return;
-				}
-
-				strings[i] =
-					`{"type":"data","data":${devalue.stringify(node.data, reducers)},"uses":${JSON.stringify(
-						serialize_uses(node)
-					)}${node.slash ? `,"slash":${JSON.stringify(node.slash)}` : ''}}`;
-			} catch (/** @type {any} */ error) {
+	return create_data_serializer({
+		encoders,
+		onError: (error) => handle_error_and_jsonify(event, state, error),
+		onSerializationError: (error, streamed) => {
+			if (!streamed) {
 				error.path = 'data' + error.path;
 				throw_devalue_error(event, error);
 			}
-		},
 
-		get_data() {
-			return {
-				data: `{"type":"data","nodes":[${strings.join(',')}]}\n`,
-				chunks: promise_id > 1 ? iterator.iterate() : null
-			};
+			return capture_error(() =>
+				e.load_promise_not_serializable(
+					{ id: /** @type {string} */ (event.route.id) },
+					{ cause: error }
+				)
+			);
 		}
-	};
+	});
 }

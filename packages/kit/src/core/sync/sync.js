@@ -13,6 +13,7 @@ import {
 import { load_explicit_env } from '../env.js';
 import { write_env } from './write_env.js';
 import { write_app_manifest } from './write_app_manifest.js';
+import { write_service_worker_data } from './write_service_worker_data.js';
 
 /**
  * Update SvelteKit's generated files
@@ -27,6 +28,7 @@ export function create(config, root, manifest_data, is_build) {
 	write_app_manifest(output, manifest_data, is_build);
 	write_client_manifest(config, manifest_data, `${output}/client`, root);
 	write_server(config, output, root);
+	write_service_worker_data(config, manifest_data, output, root);
 	write_all_types(config, manifest_data, root);
 	write_app_types(config, manifest_data, root);
 }
@@ -57,6 +59,7 @@ export function update(config, manifest_data, file, root) {
 
 		write_types(config, manifest_data, file, root);
 		write_app_types(config, manifest_data, root);
+		write_service_worker_data(config, manifest_data, `${config.outDir}/generated/dev`, root);
 	} catch (error) {
 		// A route file can disappear before the watcher delivers its unlink event. In that case,
 		// the manifest is stale and must be rebuilt instead of incrementally updated.

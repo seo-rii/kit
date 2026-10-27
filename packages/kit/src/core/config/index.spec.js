@@ -94,6 +94,7 @@ const get_defaults = (prefix = '') => ({
 	},
 	experimental: {
 		remoteFunctions: false,
+		serviceWorkerFallbacks: false,
 		forkPreloads: false
 	},
 	files: {

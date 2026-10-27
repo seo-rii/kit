@@ -76,31 +76,6 @@ export function throw_devalue_error(event, error) {
 }
 
 /**
- * @param {import('types').ServerDataNode} node
- */
-export function serialize_uses(node) {
-	const uses = {};
-
-	if (node.uses && node.uses.dependencies.size > 0) {
-		uses.dependencies = Array.from(node.uses.dependencies);
-	}
-
-	if (node.uses && node.uses.search_params.size > 0) {
-		uses.search_params = Array.from(node.uses.search_params);
-	}
-
-	if (node.uses && node.uses.params.size > 0) {
-		uses.params = Array.from(node.uses.params);
-	}
-
-	if (node.uses?.parent) uses.parent = 1;
-	if (node.uses?.route) uses.route = 1;
-	if (node.uses?.url) uses.url = 1;
-
-	return uses;
-}
-
-/**
  * Returns `true` if the given path was prerendered
  * @param {string} pathname Should include the base and be decoded
  */

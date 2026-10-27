@@ -1,3 +1,14 @@
+/** Generated worker extension bridge. */
+declare module '<sveltekit:generated>/service-worker-data.js' {
+	export function classifyRequest(
+		request: Request
+	): import('../runtime/app/service-worker/fallback.js').WorkerRequestInfo;
+	export function resolveData(
+		request: Request,
+		handlers: import('../runtime/app/service-worker/fallback.js').DataFallbackHandlers
+	): Promise<Response | null>;
+}
+
 /** Internal version of $app/server */
 declare module '<sveltekit:generated>/server.js' {
 	import { SSROptions, ServerHooks } from 'types';

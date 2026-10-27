@@ -106,6 +106,7 @@ const options = {
 			tracing: removed(e.config_option_removed_experimental_tracing),
 			instrumentation: removed(e.config_option_removed_experimental_instrumentation),
 			remoteFunctions: boolean(false),
+			serviceWorkerFallbacks: boolean(false),
 			forkPreloads: boolean(false),
 			handleRenderingErrors: removed()
 		},

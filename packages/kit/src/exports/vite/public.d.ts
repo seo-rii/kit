@@ -145,6 +145,8 @@ export interface Config extends VitePluginSvelteOptions {
 		 * @default false
 		 */
 		remoteFunctions?: boolean;
+		/** Enable the experimental service worker data fallback extension. */
+		serviceWorkerFallbacks?: boolean;
 
 		/**
 		 * Whether to enable the experimental forked preloading feature using Svelte's fork API.

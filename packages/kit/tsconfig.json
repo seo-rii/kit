@@ -33,7 +33,8 @@
 	"include": ["*.js", "scripts/**/*", "src/**/*", "test/vitest-matchers.d.ts"],
 	"exclude": [
 		"./**/write_types/test/**",
-		"./src/runtime/app/service-worker",
+		"./src/runtime/app/service-worker/index.js",
+		"./src/runtime/app/service-worker/public.d.ts",
 		"./scripts/process-messages/templates"
 	]
 }
