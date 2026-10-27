@@ -5,6 +5,11 @@ import { rimraf, walk, resolve_entry } from '../../../utils/filesystem.js';
 import { compact } from '../../../utils/array.js';
 import { posixify } from '../../../utils/os.js';
 import { ts } from '../ts.js';
+import {
+	is_worker_type_dependency,
+	worker_declaration,
+	write_worker_declarations
+} from './write_worker_declarations.js';
 const remove_relative_parent_traversals = (/** @type {string} */ path) =>
 	path.replace(/\.\.\//g, '');
 const is_whitespace = (/** @type {string} */ char) => /\s/.test(char);
@@ -132,6 +137,7 @@ export function write_all_types(config, manifest_data, root) {
 	}
 
 	fs.writeFileSync(meta_data_file, JSON.stringify(meta_data, null, '\t'));
+	write_worker_declarations(config, manifest_data, root);
 }
 
 /**
@@ -146,17 +152,24 @@ export function write_types(config, manifest_data, file, root) {
 	if (!ts) return;
 
 	if (!path.basename(file).startsWith('+')) {
-		// Not a route file
+		if (is_worker_type_dependency(root, file)) {
+			write_worker_declarations(config, manifest_data, root);
+		}
 		return;
 	}
 
 	const id = '/' + posixify(path.relative(config.kit.files.routes, path.dirname(file)));
 
 	const route = manifest_data.routes.find((route) => route.id === id);
-	if (!route) return;
-	if (!route.leaf && !route.layout && !route.endpoint) return; // nothing to do
+	if (!route || (!route.leaf && !route.layout && !route.endpoint)) {
+		if (is_worker_type_dependency(root, file)) {
+			write_worker_declarations(config, manifest_data, root);
+		}
+		return;
+	}
 
 	update_types(config, create_routes_map(manifest_data), route, root);
+	write_worker_declarations(config, manifest_data, root);
 }
 
 /**
@@ -271,6 +284,7 @@ function update_types(config, routes, route, root, to_delete = new Set()) {
 			exports: e,
 			proxies
 		} = process_node(
+			config,
 			route.leaf,
 			outdir,
 			true,
@@ -368,6 +382,7 @@ function update_types(config, routes, route, root, to_delete = new Set()) {
 			declarations: d,
 			proxies
 		} = process_node(
+			config,
 			route.layout,
 			outdir,
 			false,
@@ -424,6 +439,7 @@ function update_types(config, routes, route, root, to_delete = new Set()) {
 }
 
 /**
+ * @param {import('types').ValidatedConfig} config
  * @param {import('types').PageNode} node
  * @param {string} outdir
  * @param {boolean} is_page
@@ -434,6 +450,7 @@ function update_types(config, routes, route, root, to_delete = new Set()) {
  * @param {string[]} [worker_exports]
  */
 function process_node(
+	config,
 	node,
 	outdir,
 	is_page,
@@ -512,10 +529,11 @@ function process_node(
 			fs.writeFileSync(`${outdir}/proxy${basename}`, proxy.code);
 		}
 
-		worker_data = get_data_type(node.worker, 'null', proxy, true);
-		const worker_data_export = `export type ${prefix}WorkerData = ${worker_data};`;
-		exports.push(worker_data_export);
-		worker_exports.push(worker_data_export);
+		worker_data = get_data_type(node.worker, 'null', proxy, true, true);
+		exports.push(`export type ${prefix}WorkerData = ${worker_data};`);
+		worker_exports.push(
+			`export type ${prefix}WorkerData = ${get_data_type(node.worker, 'null', proxy, true)};`
+		);
 
 		const parent_type = `${prefix}WorkerParentData`;
 		declarations.push(
@@ -547,9 +565,7 @@ function process_node(
 			worker_exports.push(worker_actions_export, worker_action_event_export);
 
 			if (proxy?.exports.includes('actions')) {
-				const from = proxy.modified
-					? `./proxy${replace_ext_with_js(basename)}`
-					: path_to_original(outdir, node.worker, root);
+				const from = worker_import(node.worker, proxy);
 
 				worker_actions = 'WorkerActionsExport';
 				exports.push(`type WorkerActionsExport = typeof import('${from}').actions`);
@@ -652,15 +668,18 @@ function process_node(
 	 * @param {string} fallback
 	 * @param {Proxy} proxy
 	 * @param {boolean} expand
+	 * @param {boolean} [worker]
 	 */
-	function get_data_type(file_path, fallback, proxy, expand = false) {
+	function get_data_type(file_path, fallback, proxy, expand = false, worker = false) {
 		if (proxy) {
 			if (proxy.exports.includes('load')) {
 				// If the file wasn't tweaked, we can use the return type of the original file.
 				// The advantage is that type updates are reflected without saving.
-				const from = proxy.modified
-					? `./proxy${replace_ext_with_js(path.basename(file_path))}`
-					: path_to_original(outdir, file_path, root);
+				const from = worker
+					? worker_import(file_path, proxy)
+					: proxy.modified
+						? `./proxy${replace_ext_with_js(path.basename(file_path))}`
+						: path_to_original(outdir, file_path, root);
 				const type = `Kit.LoadProperties<Awaited<ReturnType<typeof import('${from}').load>>>`;
 				return expand ? `Expand<OptionalUnion<EnsureDefined<${type}>>>` : type;
 			} else {
@@ -669,6 +688,13 @@ function process_node(
 		} else {
 			return 'unknown';
 		}
+	}
+
+	/** @param {string} file @param {NonNullable<Proxy>} proxy */
+	function worker_import(file, proxy) {
+		const original = proxy.modified ? path.join(outdir, `proxy${path.basename(file)}`) : file;
+		const declaration = worker_declaration(config, original, root);
+		return './' + posixify(path.relative(outdir, declaration)).replace(/\.d\.ts$/, '.js');
 	}
 }
 

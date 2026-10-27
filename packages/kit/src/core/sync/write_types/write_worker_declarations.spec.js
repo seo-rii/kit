@@ -1,0 +1,265 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { expect, test } from 'vitest';
+import { validate_config } from '../../config/index.js';
+import create_manifest_data from '../create_manifest_data/index.js';
+import { ts } from '../ts.js';
+import { write_app_types } from '../write_app_types.js';
+import { write_env } from '../write_env.js';
+import { write_tsconfig } from '../write_tsconfig/index.js';
+import { write_all_types, write_types } from './index.js';
+import { is_worker_type_dependency } from './write_worker_declarations.js';
+
+/** @param {string} file */
+function program(file) {
+	const parsed = ts.getParsedCommandLineOfConfigFile(
+		file,
+		{},
+		{
+			...ts.sys,
+			onUnRecoverableConfigFileDiagnostic: () => {}
+		}
+	);
+	if (!parsed) throw new Error('Unable to parse test project');
+	return ts.createProgram(parsed.fileNames, parsed.options);
+}
+
+/** @param {import('typescript').Program} program */
+function diagnostics(program) {
+	return ts.getPreEmitDiagnostics(program).map((diagnostic) => ({
+		file: diagnostic.file?.fileName,
+		code: diagnostic.code,
+		message: ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')
+	}));
+}
+
+test.each([
+	['js', true],
+	['ts', true],
+	['js', false],
+	['ts', false]
+])(
+	'keeps inferred %s worker data and actions across the app declaration boundary (annotated: %s)',
+	{ timeout: 30000 },
+	(extension, annotated) => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kit-worker-declarations-'));
+		const write = (/** @type {string} */ name, /** @type {string} */ content) => {
+			const file = path.join(root, name);
+			fs.mkdirSync(path.dirname(file), { recursive: true });
+			fs.writeFileSync(file, content);
+			return file;
+		};
+		try {
+			const config = validate_config({
+				kit: { experimental: { serviceWorkerFallbacks: true } }
+			});
+			config.kit.outDir = path.join(root, '.svelte-kit');
+			for (const name of /** @type {const} */ ([
+				'src',
+				'routes',
+				'assets',
+				'params',
+				'serviceWorker'
+			])) {
+				config.kit.files[name] = path.join(root, name === 'src' ? 'src' : `src/${name}`);
+			}
+			config.kit.alias.$lib = path.join(root, 'src/lib');
+			fs.mkdirSync(path.join(root, 'node_modules/@sveltejs'), { recursive: true });
+			fs.symlinkSync(
+				path.resolve(import.meta.dirname, '../../../..'),
+				path.join(root, 'node_modules/@sveltejs/kit'),
+				'dir'
+			);
+			write(
+				'tsconfig.json',
+				JSON.stringify({
+					extends: '$app/tsconfig',
+					compilerOptions: { strict: true },
+					include: ['src/app.ts', 'src/routes/+page.server.ts']
+				})
+			);
+			write('src/routes/+page.svelte', '<p>worker</p>');
+			const payload_declaration = `
+				/// <reference path="./metadata.d.ts" />
+				import type { Metadata } from './metadata.js';
+				export interface Payload extends Metadata { scope: string; count: number }
+			`;
+			write('src/lib/payload.d.ts', payload_declaration);
+			write('src/lib/metadata.d.ts', 'export interface Metadata { version: number }');
+			write(
+				'node_modules/worker-helper/package.json',
+				JSON.stringify({ name: 'worker-helper', types: 'index.d.ts' })
+			);
+			write(
+				'node_modules/worker-helper/index.d.ts',
+				"export { package_payload, type PackagePayload } from './implementation.js';"
+			);
+			const package_source = write(
+				'node_modules/worker-helper/implementation.ts',
+				`
+				export interface PackagePayload { scope: string }
+				export const package_payload = (): PackagePayload => ({ scope: (globalThis as unknown as ServiceWorkerGlobalScope).registration.scope });
+			`
+			);
+			const nominal = `
+				declare const token: unique symbol;
+				export type Brand = string & { readonly [token]: true };
+				export declare class Model { private identity; value: number; }
+				export declare function model(): Model;
+				export declare function brand(): Brand;
+			`;
+			write('src/lib/model.d.ts', nominal);
+			write(
+				'node_modules/nominal-worker-lib/package.json',
+				JSON.stringify({ name: 'nominal-worker-lib', types: 'index.d.ts' })
+			);
+			write('node_modules/nominal-worker-lib/index.d.ts', nominal);
+			write(
+				'node_modules/ambient-worker-lib/package.json',
+				JSON.stringify({ name: 'ambient-worker-lib', types: 'index.d.ts' })
+			);
+			write(
+				'node_modules/ambient-worker-lib/index.d.ts',
+				`
+				declare module 'ambient-worker-lib' {
+					export interface Payload { nested: import('worker-helper').PackagePayload }
+					export function ambient_payload(): Payload;
+				}
+				declare module 'ambient-worker-lib' {
+					export interface Payload { count: number }
+				}
+			`
+			);
+			write(
+				'src/lib/scope.ts',
+				`
+				/// <reference lib="webworker" />
+				export function scope() { return (globalThis as unknown as ServiceWorkerGlobalScope).registration.scope; }
+			`
+			);
+			const helper = write(
+				'src/lib/helper.js',
+				`
+				import { scope } from './scope.js';
+				/** @returns {import('./payload.js').Payload} */
+				export function payload() {
+					const worker = /** @type {ServiceWorkerGlobalScope} */ (/** @type {unknown} */ (globalThis));
+					return { scope: worker.registration.scope + scope(), count: 1, version: 1 };
+				}
+			`
+			);
+			const worker = write(
+				`src/routes/+page.worker.${extension}`,
+				`
+				import { payload } from '$lib/helper.js';
+				import { package_payload } from 'worker-helper';
+				import { model as local_model, brand as local_brand } from '$lib/model.js';
+				import { model as external_model, brand as external_brand } from 'nominal-worker-lib';
+				import { ambient_payload } from 'ambient-worker-lib';
+				${annotated && extension === 'ts' ? "import type { PageWorkerLoad, PageWorkerActions } from './$worker-types';" : ''}
+				${annotated && extension === 'js' ? "/** @type {import('./$worker-types').PageWorkerLoad} */" : ''}
+				export const load${annotated && extension === 'ts' ? ': PageWorkerLoad' : ''} = (${annotated ? '{ url }' : ''}) => ({ payload: payload(), package_payload: package_payload(), local_model: local_model(), local_brand: local_brand(), external_model: external_model(), external_brand: external_brand(), ambient_payload: ambient_payload(), nullable: Math.random() > 0.5 ? 'value' : null, pathname: ${annotated ? 'url.pathname' : "'/'"} });
+				${annotated && extension === 'js' ? "/** @type {import('./$worker-types').PageWorkerActions} */" : ''}
+				export const actions${annotated && extension === 'ts' ? ': PageWorkerActions' : ''} = {
+					default: () => (${annotated ? "{ type: 'success', status: 200, data: { saved: true, ...payload() } }" : '{ saved: true, ...payload() }'})
+				};
+			`
+			);
+			write(
+				'src/routes/+page.server.ts',
+				'export const load = () => ({ payload: { scope: "server", count: 2, version: 1 }, package_payload: { scope: "server" }, nullable: "server", pathname: "/" });'
+			);
+			const app = write(
+				'src/app.ts',
+				`
+				import type { PageData, ActionData, PageWorkerData } from '../.svelte-kit/types/src/routes/$types';
+				import type { Model as LocalModel, Brand as LocalBrand } from './lib/model.js';
+				import type { Model as ExternalModel, Brand as ExternalBrand } from 'nominal-worker-lib';
+				declare const worker_data: PageWorkerData;
+				const local_model: LocalModel = worker_data.local_model;
+				const local_brand: LocalBrand = worker_data.local_brand;
+				const external_model: ExternalModel = worker_data.external_model;
+				const external_brand: ExternalBrand = worker_data.external_brand;
+				worker_data.ambient_payload.nested.scope.toUpperCase();
+				worker_data.ambient_payload.count.toFixed();
+				// @ts-expect-error a materialized ambient module retains nested field types
+				worker_data.ambient_payload.nested.scope.toFixed();
+				declare const data: PageData;
+				data.payload.scope.toUpperCase();
+				data.payload.count.toFixed();
+				data.payload.version.toFixed();
+				data.package_payload.scope.toUpperCase();
+				// @ts-expect-error snapshots must preserve possible null values
+				data.nullable.toUpperCase();
+				// @ts-expect-error worker data must retain its inferred number type
+				data.payload.count.toUpperCase();
+				declare const action: NonNullable<ActionData>;
+				const saved: boolean = action.saved;
+				// @ts-expect-error worker actions must retain their inferred boolean type
+				const wrong: string = action.saved;
+				document.querySelector('p');
+				// @ts-expect-error the app must not acquire worker globals
+				importScripts('worker.js');
+			`
+			);
+			write_tsconfig(config.kit, root);
+			const manifest = create_manifest_data({ config, cwd: root });
+			write_app_types(config.kit, manifest, root);
+			write_env('', {}, root);
+			write_all_types(config, manifest, root);
+
+			expect(diagnostics(program(path.join(config.kit.outDir, 'tsconfig.worker.json')))).toEqual(
+				[]
+			);
+			let app_program = program(path.join(root, 'tsconfig.json'));
+			expect(diagnostics(app_program)).toEqual([]);
+			expect(app_program.getSourceFile(worker)).toBeUndefined();
+			expect(app_program.getSourceFile(helper)).toBeUndefined();
+			expect(app_program.getSourceFile(path.join(root, 'src/lib/scope.ts'))).toBeUndefined();
+			expect(app_program.getSourceFile(package_source)).toBeUndefined();
+			expect(is_worker_type_dependency(root, helper)).toBe(true);
+			expect(is_worker_type_dependency(root, path.join(root, 'src/lib/payload.d.ts'))).toBe(true);
+			expect(is_worker_type_dependency(root, app)).toBe(false);
+
+			// A non-route dependency changing must update the inferred app contract too.
+			write('src/lib/payload.d.ts', payload_declaration.replace('count: number', 'count: string'));
+			write_types(config, manifest, path.join(root, 'src/lib/payload.d.ts'), root);
+			app_program = program(path.join(root, 'tsconfig.json'));
+			expect(diagnostics(app_program)).toEqual(
+				expect.arrayContaining([expect.objectContaining({ file: app, code: 2339 })])
+			);
+
+			// Adding a previously unresolved helper outside routes also refreshes inference.
+			fs.writeFileSync(
+				worker,
+				"import { added } from '$lib/new/helper.js'; export const load = () => ({ added: added() });"
+			);
+			write_types(config, manifest, worker, root);
+			const added = write('src/lib/new/helper.ts', 'export const added = () => 42;');
+			expect(is_worker_type_dependency(root, added)).toBe(true);
+			write_types(config, manifest, added, root);
+			write(
+				'src/app.ts',
+				`
+				import type { PageWorkerData } from '../.svelte-kit/types/src/routes/$types';
+				declare const data: PageWorkerData;
+				data.added.toFixed();
+				// @ts-expect-error the newly created helper must not leave stale any data
+				data.added.toUpperCase();
+			`
+			);
+			expect(diagnostics(program(path.join(root, 'tsconfig.json')))).toEqual([]);
+
+			write(
+				'src/worker-global.d.ts',
+				'/// <reference lib="webworker" />\ninterface WorkerOnlyData { scope: ServiceWorkerGlobalScope }'
+			);
+			expect(() => write_all_types(config, manifest, root)).toThrow(
+				'Cannot isolate global worker declaration'
+			);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}
+);

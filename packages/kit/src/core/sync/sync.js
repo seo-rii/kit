@@ -33,8 +33,8 @@ export function create(config, root) {
 
 	write_client_manifest(config.kit, manifest_data, `${output}/client`);
 	write_server(config, output, root);
-	write_all_types(config, manifest_data, root);
 	write_app_types(config.kit, manifest_data, root);
+	write_all_types(config, manifest_data, root);
 
 	return { manifest_data };
 }
@@ -61,8 +61,8 @@ export function update(config, manifest_data, file, root) {
 		}
 	}
 
-	write_types(config, manifest_data, file, root);
 	write_app_types(config.kit, manifest_data, root);
+	write_types(config, manifest_data, file, root);
 }
 
 /**
@@ -83,8 +83,8 @@ export function all(config, root) {
 export function all_types(config, root) {
 	init(config, root);
 	const manifest_data = create_manifest_data({ config, cwd: root });
-	write_all_types(config, manifest_data, root);
 	write_app_types(config.kit, manifest_data, root);
+	write_all_types(config, manifest_data, root);
 }
 
 /**

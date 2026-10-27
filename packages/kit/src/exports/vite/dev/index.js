@@ -17,6 +17,7 @@ import { posixify } from '../../../utils/os.js';
 import { load_error_page } from '../../../core/config/index.js';
 import { SRC_ROOT, SVELTE_KIT_ASSETS } from '../../../constants.js';
 import * as sync from '../../../core/sync/sync.js';
+import { is_worker_type_dependency } from '../../../core/sync/write_types/write_worker_declarations.js';
 import { get_mime_lookup, get_runtime_base } from '../../../core/utils.js';
 import '../../../utils/mime.js'; // extend mrmime with additional types (affects sirv too)
 import { compact } from '../../../utils/array.js';
@@ -386,6 +387,7 @@ export async function dev(vite, vite_config, svelte_config, get_remotes, root, s
 				file.startsWith(svelte_config.kit.files.assets + path.sep) ||
 				(params_file && file === params_file) ||
 				remote_module_pattern.test(file) ||
+				is_worker_type_dependency(root, file) ||
 				// in contrast to server hooks, client hooks are written to the client manifest
 				// and therefore need rebuilding when they are added/removed
 				file.startsWith(svelte_config.kit.files.hooks.client)
@@ -418,7 +420,11 @@ export async function dev(vite, vite_config, svelte_config, get_remotes, root, s
 		if (!manifest_data) return;
 		// Don't run for a single file if the whole manifest is about to get updated
 		// Unless it's a file where the trailing slash page option might have changed
-		if (timeout || !/\+(page|layout|server).*$/.test(file)) return;
+		if (
+			timeout ||
+			(!/\+(page|layout|server).*$/.test(file) && !is_worker_type_dependency(root, file))
+		)
+			return;
 		sync.update(svelte_config, manifest_data, file, root);
 	});
 
