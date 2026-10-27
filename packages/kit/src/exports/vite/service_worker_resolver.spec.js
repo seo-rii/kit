@@ -827,6 +827,112 @@ test('falls through to the server when a named worker action is missing', async 
 	expect(await response.text()).toBe('server response');
 });
 
+for (const strategy of ['worker-first', 'network-first']) {
+	test.each(['toString', 'constructor', '__proto__', 'inherited'])(
+		`treats inherited action %s as missing (${strategy})`,
+		async (name) => {
+			const error = new TypeError('offline');
+			const network_response = new Response('server response');
+			const fetch = vi.fn(() =>
+				strategy === 'network-first' ? Promise.reject(error) : Promise.resolve(network_response)
+			);
+			const action = vi.fn(() => ({ local: true }));
+			const { resolve } = instantiate_resolver(create_manifest(), {
+				fetch,
+				workers: {
+					'/src/routes/target/+page.worker.js': {
+						actions: Object.assign(Object.create({ inherited: action }), { local: action })
+					}
+				}
+			});
+			const request = create_worker_request('POST', {
+				url: `https://example.com/target?/${name}`
+			});
+
+			if (strategy === 'network-first') {
+				await expect(resolve(request, { strategy })).rejects.toBe(error);
+			} else {
+				expect(await resolve(request, { strategy })).toBe(network_response);
+			}
+			expect(fetch).toHaveBeenCalledExactlyOnceWith(request);
+			expect(action).not.toHaveBeenCalled();
+		}
+	);
+}
+
+test.each(['toString', 'constructor', '__proto__'])(
+	'invokes an explicitly registered %s action on a null-prototype actions object',
+	async (name) => {
+		const action = vi.fn(() => ({ local: true }));
+		const { resolve } = instantiate_resolver(create_manifest(), {
+			workers: {
+				'/src/routes/target/+page.worker.js': {
+					actions: Object.assign(Object.create(null), { [name]: action })
+				}
+			}
+		});
+
+		const response = await resolve(
+			create_worker_request('POST', { url: `https://example.com/target?/${name}` }),
+			{ strategy: 'worker-first' }
+		);
+
+		expect(await read_action_data(response)).toEqual({
+			type: 'success',
+			status: 200,
+			data: { local: true }
+		});
+		expect(action).toHaveBeenCalledOnce();
+	}
+);
+
+test('does not invoke an inherited default action', async () => {
+	const network_response = new Response('server response');
+	const fetch = vi.fn(() => Promise.resolve(network_response));
+	const action = vi.fn(() => ({ local: true }));
+	const { resolve } = instantiate_resolver(create_manifest(), {
+		fetch,
+		workers: {
+			'/src/routes/target/+page.worker.js': {
+				actions: Object.assign(Object.create({ default: action }), { local: action })
+			}
+		}
+	});
+
+	expect(await resolve(create_worker_request('POST'), { strategy: 'worker-first' })).toBe(
+		network_response
+	);
+	expect(fetch).toHaveBeenCalledOnce();
+	expect(action).not.toHaveBeenCalled();
+});
+
+test('does not count an inherited default action as a conflicting registered action', async () => {
+	const inherited = vi.fn(() => ({ inherited: true }));
+	const action = vi.fn(() => ({ local: true }));
+	const { resolve } = instantiate_resolver(create_manifest(), {
+		workers: {
+			'/src/routes/target/+page.worker.js': {
+				actions: Object.assign(Object.create({ default: inherited }), {
+					local: action,
+					other: action
+				})
+			}
+		}
+	});
+
+	const response = await resolve(
+		create_worker_request('POST', { url: 'https://example.com/target?/local' }),
+		{ strategy: 'worker-first' }
+	);
+
+	expect(await read_action_data(response)).toMatchObject({
+		type: 'success',
+		data: { local: true }
+	});
+	expect(action).toHaveBeenCalledOnce();
+	expect(inherited).not.toHaveBeenCalled();
+});
+
 test('rejects the reserved named default worker action', async () => {
 	const action = vi.fn(() => ({ local: true }));
 	const manifest = create_manifest();

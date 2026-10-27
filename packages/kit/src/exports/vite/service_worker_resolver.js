@@ -259,13 +259,14 @@ export function create_service_worker_resolver(manifest_data, options = {}) {
 			if (!actions) return null;
 
 			try {
-				if (actions.default && Object.keys(actions).length > 1) {
+				if (Object.hasOwn(actions, 'default') && actions.default && Object.keys(actions).length > 1) {
 					throw new Error(
 						'When using named actions, the default action cannot be used. See the docs for more info: https://svelte.dev/docs/kit/form-actions#named-actions'
 					);
 				}
 
 				const action_name = get_action_name(request_url);
+				if (!Object.hasOwn(actions, action_name)) return null;
 				const action = actions[action_name];
 				if (!action) return null;
 
