@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from 'vitest';
 import { validate_config } from '../../config/index.js';
+import { ts } from '../ts.js';
 import { write_tsconfig } from './index.js';
 
 test('isolates route worker modules in a service worker TypeScript project', () => {
@@ -73,3 +74,51 @@ test('isolates route worker modules in a service worker TypeScript project', () 
 		fs.rmSync(root, { recursive: true, force: true });
 	}
 });
+
+test.each(['js', 'ts'])(
+	'the generated worker project checks %s without emitting source files',
+	(extension) => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kit-route-worker-check-'));
+
+		try {
+			const { kit } = validate_config({ kit: { experimental: { serviceWorkerFallbacks: true } } });
+			kit.files.src = path.join(root, 'src');
+			kit.files.routes = path.join(root, 'src/routes');
+			kit.files.serviceWorker = path.join(root, 'src/service-worker');
+			kit.outDir = path.join(root, '.svelte-kit');
+			fs.mkdirSync(kit.files.routes, { recursive: true });
+			fs.mkdirSync(path.join(root, 'node_modules/$app/types'), { recursive: true });
+			fs.writeFileSync(path.join(root, 'node_modules/$app/types/index.d.ts'), 'export {};');
+			const worker = path.join(kit.files.routes, `+page.worker.${extension}`);
+			fs.writeFileSync(
+				worker,
+				extension === 'js'
+					? '/** @type {number} */ export const invalid = "wrong";'
+					: 'export const load = async () => ({ available: typeof importScripts === "function" });'
+			);
+			write_tsconfig(kit, root);
+
+			const config_file = path.join(kit.outDir, 'tsconfig.worker.json');
+			const config = ts.readConfigFile(config_file, ts.sys.readFile);
+			const parsed = ts.parseJsonConfigFileContent(
+				config.config,
+				ts.sys,
+				kit.outDir,
+				undefined,
+				config_file
+			);
+			const program = ts.createProgram(parsed.fileNames, parsed.options);
+			expect(program.getSourceFile(worker)).toBeDefined();
+			const diagnostics = ts.getPreEmitDiagnostics(program);
+			expect(diagnostics.map((diagnostic) => diagnostic.code)).toEqual(
+				extension === 'js' ? [2322] : []
+			);
+			/** @type {string[]} */
+			const emitted = [];
+			program.emit(undefined, (file) => emitted.push(file));
+			expect(emitted).toEqual([]);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}
+);

@@ -88,8 +88,9 @@ export function write_tsconfig(kit, root) {
 		const route_worker_config = normalize_config(route_worker_out, {
 			extends: '$app/tsconfig/service-worker',
 			compilerOptions: {
+				...RECOMMENDED_OPTIONS,
 				rootDirs: [root, `${kit.outDir}/types`],
-				skipLibCheck: true
+				noEmit: true
 			},
 			include: [
 				...route_worker_files,
