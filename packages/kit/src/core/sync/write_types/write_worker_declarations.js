@@ -105,6 +105,17 @@ export function write_worker_declarations(config, manifest, root) {
 	/** @type {Set<string>} */
 	const missing = new Set();
 	const host = ts.createCompilerHost(options, true);
+	/** @param {import('typescript').FileReference} reference @param {string} file */
+	const resolve_type_reference = (reference, file) =>
+		ts.resolveTypeReferenceDirective(
+			reference.fileName,
+			file,
+			options,
+			host,
+			undefined,
+			undefined,
+			reference.resolutionMode
+		).resolvedTypeReferenceDirective?.resolvedFileName;
 	const file_exists = host.fileExists;
 	const directory_exists = host.directoryExists;
 	/** @param {string} file */
@@ -208,6 +219,10 @@ export function write_worker_declarations(config, manifest, root) {
 				path.resolve(path.dirname(file), reference.fileName)
 			)
 		);
+		for (const reference of source.typeReferenceDirectives) {
+			const dependency = resolve_type_reference(reference, file);
+			if (dependency) imported.add(path.resolve(dependency));
+		}
 		visit_imports(source, (literal) => {
 			const resolved = ts.resolveModuleName(literal.text, file, options, ts.sys).resolvedModule;
 			const dependency = ambient_files.get(literal.text) ?? resolved?.resolvedFileName;
@@ -368,6 +383,23 @@ export function write_worker_declarations(config, manifest, root) {
 				reference.pos,
 				reference.end,
 				'./' + posixify(path.relative(path.dirname(target), destination))
+			);
+		}
+		for (const reference of source.typeReferenceDirectives) {
+			const resolved = resolve_type_reference(reference, original_file);
+			if (!resolved) continue;
+			const original = path.resolve(resolved);
+			const destination = declarations.has(original)
+				? worker_declaration(config, original, root)
+				: original;
+			// A package lookup would reopen the original graph, including worker libs.
+			// A path reference also preserves the exact conditional-export resolution.
+			const start = text.lastIndexOf('///', reference.pos);
+			const end = text.indexOf('>', reference.end) + 1;
+			code.overwrite(
+				start,
+				end,
+				`/// <reference path=${JSON.stringify('./' + posixify(path.relative(path.dirname(target), destination)))} />`
 			);
 		}
 		// A source's worker-only lib reference must not change the app program's globals.

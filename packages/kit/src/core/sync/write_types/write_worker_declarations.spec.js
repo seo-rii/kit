@@ -116,6 +116,26 @@ test.each([
 			);
 			write('node_modules/nominal-worker-lib/index.d.ts', nominal);
 			write(
+				'node_modules/referenced-worker-lib/package.json',
+				JSON.stringify({ name: 'referenced-worker-lib', types: 'index.d.ts' })
+			);
+			const referenced_package = write(
+				'node_modules/referenced-worker-lib/index.d.ts',
+				`
+				/// <reference types="worker-reference" />
+				export interface Payload { count: number }
+				export declare function referenced_payload(): Payload;
+			`
+			);
+			write(
+				'node_modules/@types/worker-reference/package.json',
+				JSON.stringify({ name: '@types/worker-reference', types: 'index.d.ts' })
+			);
+			const referenced_globals = write(
+				'node_modules/@types/worker-reference/index.d.ts',
+				'/// <reference lib="webworker" />\nexport interface Marker {}'
+			);
+			write(
 				'node_modules/ambient-worker-lib/package.json',
 				JSON.stringify({ name: 'ambient-worker-lib', types: 'index.d.ts' })
 			);
@@ -156,10 +176,11 @@ test.each([
 				import { package_payload } from 'worker-helper';
 				import { model as local_model, brand as local_brand } from '$lib/model.js';
 				import { model as external_model, brand as external_brand } from 'nominal-worker-lib';
+				import { referenced_payload } from 'referenced-worker-lib';
 				import { ambient_payload } from 'ambient-worker-lib';
 				${annotated && extension === 'ts' ? "import type { PageWorkerLoad, PageWorkerActions } from './$worker-types';" : ''}
 				${annotated && extension === 'js' ? "/** @type {import('./$worker-types').PageWorkerLoad} */" : ''}
-				export const load${annotated && extension === 'ts' ? ': PageWorkerLoad' : ''} = (${annotated ? '{ url }' : ''}) => ({ payload: payload(), package_payload: package_payload(), local_model: local_model(), local_brand: local_brand(), external_model: external_model(), external_brand: external_brand(), ambient_payload: ambient_payload(), nullable: Math.random() > 0.5 ? 'value' : null, pathname: ${annotated ? 'url.pathname' : "'/'"} });
+				export const load${annotated && extension === 'ts' ? ': PageWorkerLoad' : ''} = (${annotated ? '{ url }' : ''}) => ({ payload: payload(), package_payload: package_payload(), local_model: local_model(), local_brand: local_brand(), external_model: external_model(), external_brand: external_brand(), ambient_payload: ambient_payload(), referenced_payload: referenced_payload(), nullable: Math.random() > 0.5 ? 'value' : null, pathname: ${annotated ? 'url.pathname' : "'/'"} });
 				${annotated && extension === 'js' ? "/** @type {import('./$worker-types').PageWorkerActions} */" : ''}
 				export const actions${annotated && extension === 'ts' ? ': PageWorkerActions' : ''} = {
 					default: () => (${annotated ? "{ type: 'success', status: 200, data: { saved: true, ...payload() } }" : '{ saved: true, ...payload() }'})
@@ -181,6 +202,9 @@ test.each([
 				const local_brand: LocalBrand = worker_data.local_brand;
 				const external_model: ExternalModel = worker_data.external_model;
 				const external_brand: ExternalBrand = worker_data.external_brand;
+				worker_data.referenced_payload.count.toFixed();
+				// @ts-expect-error references must retain the package's actual payload type
+				worker_data.referenced_payload.count.toUpperCase();
 				worker_data.ambient_payload.nested.scope.toUpperCase();
 				worker_data.ambient_payload.count.toFixed();
 				// @ts-expect-error a materialized ambient module retains nested field types
@@ -218,6 +242,11 @@ test.each([
 			expect(app_program.getSourceFile(helper)).toBeUndefined();
 			expect(app_program.getSourceFile(path.join(root, 'src/lib/scope.ts'))).toBeUndefined();
 			expect(app_program.getSourceFile(package_source)).toBeUndefined();
+			expect(app_program.getSourceFile(referenced_package)).toBeUndefined();
+			expect(app_program.getSourceFile(referenced_globals)).toBeUndefined();
+			expect(
+				app_program.getSourceFiles().some((file) => /lib\.webworker\.d\.ts$/.test(file.fileName))
+			).toBe(false);
 			expect(is_worker_type_dependency(root, helper)).toBe(true);
 			expect(is_worker_type_dependency(root, path.join(root, 'src/lib/payload.d.ts'))).toBe(true);
 			expect(is_worker_type_dependency(root, app)).toBe(false);
