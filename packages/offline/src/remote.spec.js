@@ -54,10 +54,17 @@ function memory_storage() {
 						return Promise.resolve(entry.response.clone());
 					}
 				),
-				put: vi.fn((request, response) => {
+				put: vi.fn(async (request, response) => {
 					operations.push('put');
-					entries.set(request.url, { request, response: response.clone() });
-					return Promise.resolve();
+					const body = response.body === null ? null : await response.arrayBuffer();
+					entries.set(request.url, {
+						request,
+						response: new Response(body, {
+							status: response.status,
+							statusText: response.statusText,
+							headers: response.headers
+						})
+					});
 				}),
 				delete: vi.fn((request) => {
 					operations.push('delete');
@@ -272,6 +279,50 @@ describe('explicit cache opt-in', () => {
 		await old_result;
 
 		expect(await (await handle(new Request(query_url))).text()).toBe('new opt-in');
+	});
+
+	test('cancellation after a no-store response does not skip its queued cache deletion', async () => {
+		const { storage } = memory_storage();
+		const fetch = vi.fn().mockResolvedValueOnce(cacheable('previous value'));
+		const { handle } = create(fetch, storage);
+		await handle(new Request(query_url));
+
+		const open = storage.open.getMockImplementation();
+		if (!open) throw new Error('Expected the memory cache implementation');
+		const putting = deferred();
+		const finish_put = deferred();
+		storage.open.mockImplementation(async (name) => {
+			const cache = await open(name);
+			const put = cache.put;
+			cache.put = vi.fn(async (...args) => {
+				putting.resolve(undefined);
+				await finish_put.promise;
+				return put(...args);
+			});
+			return cache;
+		});
+
+		const revoking = deferred();
+		fetch
+			.mockResolvedValueOnce(cacheable('unrelated value'))
+			.mockReturnValueOnce(revoking.promise)
+			.mockRejectedValue(offline_error);
+		const other_request = new Request(`${query_url}-other`);
+		const pending_put = handle(other_request);
+		await putting.promise;
+		const controller = new AbortController();
+		const reason = new DOMException('Navigation cancelled', 'AbortError');
+		const revoked = handle(new Request(query_url, { signal: controller.signal }));
+		const rejected = expect(revoked).rejects.toBe(reason);
+		revoking.resolve(new Response('revoked', { headers: { 'cache-control': 'no-store' } }));
+		await Promise.resolve();
+		controller.abort(reason);
+		finish_put.resolve(undefined);
+		await pending_put;
+		await rejected;
+
+		await expect(handle(new Request(query_url))).rejects.toBe(offline_error);
+		expect(await (await handle(other_request)).text()).toBe('unrelated value');
 	});
 
 	test('preserves an HTTP error without falling back to an earlier cached success', async () => {

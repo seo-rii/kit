@@ -137,10 +137,11 @@ export function createRemoteCache({
 				reads.generation += 1;
 			}
 			await with_storage(async () => {
-				if (request.signal.aborted || !(freshness ? is_current() : is_current_generation())) return;
+				if (!(freshness ? !request.signal.aborted && is_current() : is_current_generation()))
+					return;
 				const cache = await storage.open(namespace);
 				if (!freshness) {
-					// A new response can revoke a previous opt-in, even when its body is no-store.
+					// Once received, revocation survives cancellation of the caller's request.
 					await cache.delete(cache_request, { ignoreVary: true });
 					return;
 				}
