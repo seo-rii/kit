@@ -91,8 +91,25 @@ export function createRemoteCache({
 		const is_current = () => is_current_generation() && reads.generation === read_generation;
 		try {
 			let response;
+			let received_at;
+			let freshness;
+			/** @type {ArrayBuffer | null} */
+			let body = null;
 			try {
 				response = await fetch(network_request);
+				request.signal.throwIfAborted();
+				received_at = Date.now();
+				freshness = get_freshness(response, received_at);
+				if (!freshness && is_current_generation()) {
+					// Fence existing reads before awaiting storage, including pending cache matches.
+					// Revocation deletes every Vary variant, so they share the same generation.
+					reads.generation += 1;
+				}
+				if (freshness && storage_available && is_current() && response.body !== null) {
+					// Body failures are transport failures, not CacheStorage failures. Finish the
+					// download before queuing storage work so it cannot hold up invalidations.
+					body = await response.clone().arrayBuffer();
+				}
 			} catch (error) {
 				request.signal.throwIfAborted();
 				if (error && typeof error === 'object' && 'name' in error && error.name === 'AbortError') {
@@ -128,14 +145,6 @@ export function createRemoteCache({
 				throw error;
 			}
 
-			request.signal.throwIfAborted();
-			const received_at = Date.now();
-			const freshness = get_freshness(response, received_at);
-			if (!freshness && is_current_generation()) {
-				// Fence existing reads before awaiting storage, including pending cache matches.
-				// Revocation deletes every Vary variant, so they share the same generation.
-				reads.generation += 1;
-			}
 			await with_storage(async () => {
 				if (!(freshness ? !request.signal.aborted && is_current() : is_current_generation()))
 					return;
@@ -146,12 +155,11 @@ export function createRemoteCache({
 					return;
 				}
 
-				const copy = response.clone();
-				const headers = new Headers(copy.headers);
+				const headers = new Headers(response.headers);
 				headers.set(stored_at_header, String(received_at));
 				await cache.put(
 					cache_request,
-					new Response(copy.body, { status: copy.status, statusText: copy.statusText, headers })
+					new Response(body, { status: response.status, statusText: response.statusText, headers })
 				);
 			});
 			request.signal.throwIfAborted();

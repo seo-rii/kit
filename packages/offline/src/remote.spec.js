@@ -113,6 +113,29 @@ function deferred() {
 	return Promise.withResolvers();
 }
 
+function streamed_response() {
+	const reading = deferred();
+	const body = deferred();
+	const response = new Response(
+		new ReadableStream(
+			{
+				async pull(controller) {
+					reading.resolve(undefined);
+					try {
+						controller.enqueue(new TextEncoder().encode(await body.promise));
+						controller.close();
+					} catch (error) {
+						controller.error(error);
+					}
+				}
+			},
+			{ highWaterMark: 0 }
+		),
+		{ headers: { 'content-type': 'application/json', 'cache-control': 'private, max-age=60' } }
+	);
+	return { response, reading: reading.promise, finish: body.resolve, fail: body.reject };
+}
+
 afterEach(() => vi.useRealTimers());
 
 test('returns the network response untouched and falls back to opaque cached bytes', async () => {
@@ -132,6 +155,127 @@ test('returns the network response untouched and falls back to opaque cached byt
 	expect(fallback.headers.has('x-sveltekit-offline-stored-at')).toBe(false);
 	expect(await fallback.text()).toBe('{"data":"not decoded by the cache"}');
 	expect(fetch).toHaveBeenCalledTimes(2);
+});
+
+describe('response body transport failures', () => {
+	test('falls back to a fresh same-key value without disabling other cached reads', async () => {
+		const { storage } = memory_storage();
+		const stream = streamed_response();
+		const body_error = new TypeError('Connection reset while receiving the body');
+		const fetch = vi
+			.fn()
+			.mockResolvedValueOnce(cacheable('same-key value'))
+			.mockResolvedValueOnce(cacheable('other value'))
+			.mockResolvedValueOnce(stream.response)
+			.mockRejectedValue(offline_error);
+		const { handle } = create(fetch, storage);
+		const request = new Request(query_url);
+		const other_request = new Request(`${query_url}-other`);
+		await handle(request);
+		await handle(other_request);
+		const failed_read = handle(request);
+		await stream.reading;
+		stream.fail(body_error);
+
+		expect(await (await failed_read).text()).toBe('same-key value');
+		expect(await (await handle(other_request)).text()).toBe('other value');
+		expect(await (await handle(request)).text()).toBe('same-key value');
+	});
+
+	test('preserves an uncached body error without disabling existing cached reads', async () => {
+		const { storage } = memory_storage();
+		const stream = streamed_response();
+		const body_error = new TypeError('Connection reset while receiving the body');
+		const fetch = vi
+			.fn()
+			.mockResolvedValueOnce(cacheable('other value'))
+			.mockResolvedValueOnce(stream.response)
+			.mockRejectedValue(offline_error);
+		const { handle } = create(fetch, storage);
+		const other_request = new Request(`${query_url}-other`);
+		await handle(other_request);
+		const failed_read = handle(new Request(query_url));
+		const rejected = expect(failed_read).rejects.toBe(body_error);
+		await stream.reading;
+		stream.fail(body_error);
+		await rejected;
+
+		expect(await (await handle(other_request)).text()).toBe('other value');
+	});
+
+	test('does not hold mutation invalidation behind a pending network body', async () => {
+		const { storage } = memory_storage();
+		const stream = streamed_response();
+		const body_error = new TypeError('Connection reset after the mutation');
+		const fetch = vi
+			.fn()
+			.mockResolvedValueOnce(cacheable('pre-mutation value'))
+			.mockResolvedValueOnce(stream.response)
+			.mockResolvedValueOnce(new Response('accepted'))
+			.mockRejectedValue(offline_error);
+		const { handle } = create(fetch, storage);
+		await handle(new Request(query_url));
+		const pending_read = handle(new Request(query_url));
+		const rejected = expect(pending_read).rejects.toBe(body_error);
+		await stream.reading;
+		const mutation = handle(new Request(query_url, { method: 'POST' }));
+		try {
+			await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
+		} finally {
+			stream.fail(body_error);
+			await mutation;
+			await rejected;
+		}
+
+		await expect(handle(new Request(query_url))).rejects.toBe(offline_error);
+	});
+
+	test('preserves cancellation during a body read without poisoning other cache entries', async () => {
+		const { storage } = memory_storage();
+		const stream = streamed_response();
+		const controller = new AbortController();
+		const reason = new DOMException('Navigation cancelled', 'AbortError');
+		const fetch = vi
+			.fn()
+			.mockResolvedValueOnce(cacheable('other value'))
+			.mockResolvedValueOnce(stream.response)
+			.mockRejectedValue(offline_error);
+		const { handle } = create(fetch, storage);
+		const other_request = new Request(`${query_url}-other`);
+		await handle(other_request);
+		const pending_read = handle(new Request(query_url, { signal: controller.signal }));
+		const rejected = expect(pending_read).rejects.toBe(reason);
+		await stream.reading;
+		controller.abort(reason);
+		stream.fail(reason);
+		await rejected;
+
+		expect(await (await handle(other_request)).text()).toBe('other value');
+	});
+
+	test('a genuine Cache.put failure still disables the coordinator', async () => {
+		const { storage } = memory_storage();
+		const response = cacheable('online value');
+		const fetch = vi
+			.fn()
+			.mockResolvedValueOnce(cacheable('previous value'))
+			.mockResolvedValueOnce(response)
+			.mockRejectedValue(offline_error);
+		const { handle } = create(fetch, storage);
+		await handle(new Request(query_url));
+		const open = storage.open.getMockImplementation();
+		if (!open) throw new Error('Expected the memory cache implementation');
+		storage.open.mockImplementation(async (name) => {
+			const cache = await open(name);
+			cache.put.mockRejectedValue(new DOMException('Storage is full', 'QuotaExceededError'));
+			return cache;
+		});
+
+		expect(await handle(new Request(query_url))).toBe(response);
+		expect(await response.text()).toBe('online value');
+		await expect(handle(new Request(query_url))).rejects.toBe(offline_error);
+		expect(storage.open).toHaveBeenCalledTimes(2);
+	});
 });
 
 test('bypasses the browser HTTP cache while preserving query headers and abort linkage', async () => {
