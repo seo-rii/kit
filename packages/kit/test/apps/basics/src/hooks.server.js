@@ -6,6 +6,7 @@ import { COOKIE_NAME } from './routes/cookies/shared';
 import { _set_from_init } from './routes/init-hooks/+page.server';
 import { getRequestEvent } from '$app/server';
 import { resolve } from '$app/paths';
+import { offline_remote_cache_headers } from './routes/offline-plugin/remote/cache-policy.server.js';
 
 // check that this doesn't throw when called outside an event context
 resolve('/');
@@ -75,6 +76,7 @@ export const handleError = ({ event, kind, error }) => {
 };
 
 export const handle = sequence(
+	offline_remote_cache_headers,
 	// eslint-disable-next-line prefer-arrow-callback -- this needs a name for tests
 	function set_tracing_test_id({ event, resolve }) {
 		const test_id = !building && event.url.searchParams.get('test_id');

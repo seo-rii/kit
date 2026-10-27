@@ -3,6 +3,7 @@ import { Foo } from './lib';
 
 /** @type {Record<string, string>} */
 const mapping = {
+	'/offline-plugin/reroute-visible': '/offline-plugin/reroute-target',
 	'/reroute/basic/a': '/reroute/basic/b',
 	'/reroute/client-only-redirect/a': '/reroute/client-only-redirect/b',
 	'/reroute/preload-data/a': '/reroute/preload-data/b',

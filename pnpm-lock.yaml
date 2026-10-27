@@ -984,6 +984,9 @@ importers:
       svelte-check:
         specifier: 'catalog:'
         version: 4.7.6(picomatch@4.0.7)(svelte@5.57.1(@typescript-eslint/types@8.70.1))(typescript@6.0.3)
+      sveltekit-offline:
+        specifier: workspace:*
+        version: link:../../../../offline
       test-redirect-importer:
         specifier: workspace:*
         version: link:../../../../test-redirect-importer

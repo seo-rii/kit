@@ -1,6 +1,7 @@
 import { immutable } from '$app/manifest';
 import { version } from '$app/env';
 import { PUBLIC_STATIC } from '$app/env/public';
+import { handle_offline_plugin_request } from './offline-plugin.js';
 
 const name = `cache-${version}-${PUBLIC_STATIC}`;
 
@@ -23,6 +24,12 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
 	// @ts-expect-error
 	const { request } = event;
+	const offline_response = handle_offline_plugin_request(request);
+	if (offline_response) {
+		// @ts-expect-error service workers have a separate TypeScript environment
+		event.respondWith(offline_response);
+		return;
+	}
 
 	if (request.method !== 'GET' || request.headers.has('range')) return;
 

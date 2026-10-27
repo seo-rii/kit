@@ -19,6 +19,7 @@
 		"test:client-import": "svelte-kit sync && vitest run"
 	},
 	"devDependencies": {
+		"sveltekit-offline": "workspace:*",
 		"@opentelemetry/api": "catalog:",
 		"@opentelemetry/sdk-node": "catalog:",
 		"@opentelemetry/sdk-trace-node": "catalog:",

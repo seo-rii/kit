@@ -50,6 +50,7 @@ export default defineConfig({
 			},
 
 			experimental: {
+				serviceWorkerFallbacks: true,
 				remoteFunctions: true
 			},
 
