@@ -1,6 +1,6 @@
 # SvelteKit offline extension experiment
 
-This private workspace package tests an external offline policy on top of a small SvelteKit extension. It requires the Kit changes in this branch; published SvelteKit 3.1 does not expose these APIs. The package owns read policy and optional remote response caching. Kit owns route matching and its data response format.
+This private workspace package tests an external offline policy on top of a small SvelteKit extension. It requires the Kit changes in this branch; published SvelteKit 3.1 does not expose these APIs. The package owns read policy, optional remote response caching, and an explicit mutation outbox. Kit owns route matching and its data response format.
 
 ## Read fallbacks
 
@@ -80,6 +80,53 @@ Kit's default remote responses use `private, no-store`, so they remain uncached.
 Query and live payloads stay opaque. Remote GET network attempts bypass the browser HTTP cache so it cannot serve an older result after the package invalidates Cache Storage. Live streams pass through. Mutations and enhanced actions invalidate the namespace before and after their single network attempt, including failed attempts. In-flight reads cannot repopulate or use the old cache across that mutation. POST batch queries conservatively invalidate too. Single-flight refresh responses are returned unchanged; the package does not emulate remote commands, forms, live subscriptions, or Kit's client query state.
 
 Supply an authenticated identity scope, rotate it when identity changes, and call `invalidate()` when clearing a session. Scope strings are storage partitions, not authorization. Cache Storage failures disable caching for that coordinator without changing the network result.
+
+## Explicit outbox
+
+The outbox runs in a page or worker with IndexedDB and Web Locks. The application explicitly enqueues domain operations; it does not intercept forms or remote functions.
+
+```js
+import { createIndexedDBOutboxStore, createOutbox } from 'sveltekit-offline/outbox';
+
+const store = await createIndexedDBOutboxStore({ name: 'my-app-outbox-v1' });
+const outbox = createOutbox({
+  scope: authenticatedAccountScope,
+  store,
+  sender: {
+    idempotency: 'operation-id',
+    async send({ id, payload, signal }) {
+      const response = await fetch('/api/operations', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id, payload }),
+        signal
+      });
+      if (!response.ok) throw new Error('No confirmed receipt');
+      // { status: 'confirmed', receipt: ... } or { status: 'rejected', reason: ... }
+      return response.json();
+    }
+  }
+});
+
+await outbox.enqueue({ id: crypto.randomUUID(), payload: { type: 'add-task', title: 'Review' } });
+await outbox.flush();
+const entries = await outbox.list();
+```
+
+The server must bind operations to authenticated identity, atomically deduplicate by that identity and operation ID, reject a changed payload for an existing ID, and return the original receipt on retries. Declaring `idempotency: 'operation-id'` asserts that application contract; it cannot enforce it.
+
+| State       | Meaning                                                                              |
+| ----------- | ------------------------------------------------------------------------------------ |
+| `pending`   | The operation is durably stored and has not been attempted.                          |
+| `unknown`   | An attempt was durably recorded before sending; its result is not confirmed locally. |
+| `confirmed` | An explicit success receipt was durably stored.                                      |
+| `rejected`  | An explicit rejection receipt was durably stored.                                    |
+
+Loss of a response, cancellation, or a crashed sender leaves `unknown`, even if the server applied the operation. Later ordinary flushes skip it. Explicit `flush({ retryUnknown: true })` retries the same identity and payload under the server deduplication contract. Show pending and unknown work distinctly from confirmed state in the UI.
+
+Writes wait for the IndexedDB transaction to complete. Web Locks serialize the store and scope across tabs and workers; a custom lock must provide the same guarantee. Missing locks or storage failures are reported rather than silently degrading to an unsafe queue. Keep operations and receipts JSON-compatible. Operations with different IDs are independent; the queue does not promise FIFO or causal ordering. Identity changes, schema migration, retention, background synchronization, and conflict UI remain application responsibilities.
+
+The browser fixture's deduplication map is test-only and in memory. It demonstrates receipt loss and retry behavior, not a production persistence backend.
 
 ## Validation
 

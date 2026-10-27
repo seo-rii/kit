@@ -12,6 +12,10 @@
 		"./remote": {
 			"types": "./src/remote-public.d.ts",
 			"default": "./src/remote.js"
+		},
+		"./outbox": {
+			"types": "./src/outbox-public.d.ts",
+			"default": "./src/outbox.js"
 		}
 	},
 	"scripts": {
