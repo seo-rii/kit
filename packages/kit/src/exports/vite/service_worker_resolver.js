@@ -97,6 +97,14 @@ export function create_service_worker_resolver(manifest_data, options = {}) {
 		export async function resolve(event, options = {}) {
 			const request = event instanceof Request ? event : event.request;
 			request.signal.throwIfAborted();
+			const url = new URL(request.url);
+			if (
+				url.origin !== location.origin ||
+				(base && url.pathname !== base && !url.pathname.startsWith(base + '/'))
+			) {
+				return fetch(request);
+			}
+
 			const strategy = options.strategy ?? 'network-first';
 
 			if (strategy === 'worker-first') {

@@ -62,6 +62,7 @@ function create_manifest({
 /**
  * @param {import('types').ManifestData} manifest
  * @param {{
+ *   base?: string;
  *   fetch?: typeof fetch;
  *   hooks?: Record<string, any>;
  *   matchers?: Record<string, import('@sveltejs/kit').ParamMatcher>;
@@ -70,10 +71,10 @@ function create_manifest({
  */
 function instantiate_resolver(
 	manifest,
-	{ fetch = globalThis.fetch, hooks = {}, matchers = {}, workers }
+	{ base = '', fetch = globalThis.fetch, hooks = {}, matchers = {}, workers }
 ) {
 	const source = create_service_worker_resolver(manifest, {
-		base: '',
+		base,
 		version: 'test-version'
 	})
 		.replace("import * as devalue from 'devalue';", '')
@@ -93,10 +94,19 @@ function instantiate_resolver(
 		'universal_hooks',
 		'worker_matchers',
 		'fetch',
+		'location',
 		`${source}\nreturn { resolve };`
 	);
 
-	return factory(devalue, exec, workers, hooks, matchers, fetch);
+	return factory(
+		devalue,
+		exec,
+		workers,
+		hooks,
+		matchers,
+		fetch,
+		new URL('https://example.com/service-worker.js')
+	);
 }
 
 /** @param {Response} response */
@@ -311,6 +321,82 @@ test.each(['layout', 'page'])(
 		);
 	}
 );
+
+for (const strategy of ['worker-first', 'network-first']) {
+	for (const method of ['GET', 'POST']) {
+		test.each([
+			'https://other.example/app/target',
+			'http://example.com/app/target',
+			'https://example.com:444/app/target',
+			'https://example.com/target',
+			'https://example.com/application/target'
+		])(`passes ${method} %s outside the app to fetch (${strategy})`, async (url) => {
+			const error = new TypeError('network failure');
+			const network_response = new Response('network response');
+			const fetch = vi.fn(() =>
+				strategy === 'network-first' ? Promise.reject(error) : Promise.resolve(network_response)
+			);
+			const handler = vi.fn(() => ({ local: true }));
+			const reroute = vi.fn(() => '/app/target');
+			const { resolve } = instantiate_resolver(
+				create_manifest({ hooks: { client: null, server: null, universal: 'src/hooks.js' } }),
+				{
+					base: '/app',
+					fetch,
+					hooks: { reroute },
+					workers: {
+						'/src/routes/target/+page.worker.js': {
+							load: handler,
+							actions: { default: handler }
+						}
+					}
+				}
+			);
+			const request = create_worker_request(method, { url });
+
+			if (strategy === 'network-first') {
+				await expect(resolve(request, { strategy })).rejects.toBe(error);
+			} else {
+				expect(await resolve(request, { strategy })).toBe(network_response);
+			}
+			expect(fetch).toHaveBeenCalledExactlyOnceWith(request);
+			expect(reroute).not.toHaveBeenCalled();
+			expect(handler).not.toHaveBeenCalled();
+		});
+
+		test.each([
+			{ pathname: '/app/target', route_id: '/target', pattern: /^\/target\/?$/ },
+			{ pathname: '/app', route_id: '/', pattern: /^\/$/ }
+		])(`resolves ${method} $pathname inside the app (${strategy})`, async (route) => {
+			const fetch = vi.fn(() => Promise.reject(new TypeError('offline')));
+			const handler = vi.fn((/** @type {{ url: URL }} */ { url }) => ({
+				pathname: url.pathname
+			}));
+			const { resolve } = instantiate_resolver(create_manifest(route), {
+				base: '/app',
+				fetch,
+				workers: {
+					'/src/routes/target/+page.worker.js': {
+						load: handler,
+						actions: { default: handler }
+					}
+				}
+			});
+
+			const response = await resolve(
+				create_worker_request(method, { url: `https://example.com${route.pathname}` }),
+				{ strategy }
+			);
+			const body = await response.json();
+			const data =
+				method === 'GET' ? devalue.unflatten(body.nodes[0].data) : devalue.parse(body.data);
+
+			expect(data).toEqual({ pathname: route.pathname });
+			expect(handler).toHaveBeenCalledOnce();
+			expect(fetch).toHaveBeenCalledTimes(strategy === 'network-first' ? 1 : 0);
+		});
+	}
+}
 
 test('only imports the params module when a worker route uses a matcher', () => {
 	const manifest = create_manifest();
