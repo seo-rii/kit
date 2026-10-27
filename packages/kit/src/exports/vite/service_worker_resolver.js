@@ -6,6 +6,7 @@ import { s } from '../../utils/misc.js';
 const DATA_SUFFIX = '/__data.json';
 const HTML_DATA_SUFFIX = '.html__data.json';
 const routing = posixify(fileURLToPath(new URL('../../utils/routing.js', import.meta.url)));
+const url_utils = posixify(fileURLToPath(new URL('../../utils/url.js', import.meta.url)));
 
 /**
  * @param {import('types').ManifestData} manifest_data
@@ -25,6 +26,7 @@ export function create_service_worker_resolver(manifest_data, options = {}) {
 
 	if (routes.length > 0) {
 		imports.push(`import { exec } from ${s(routing)};`);
+		imports.push(`import { normalize_path } from ${s(url_utils)};`);
 	}
 
 	const hooks_name = manifest_data.hooks.universal && routes.length > 0 ? 'universal_hooks' : null;
@@ -157,6 +159,12 @@ export function create_service_worker_resolver(manifest_data, options = {}) {
 			const route_match = await match_worker_route(page_url);
 			request.signal.throwIfAborted();
 			if (!route_match) return null;
+
+			const trailing_slash =
+				page_url.pathname === base || page_url.pathname === base + '/'
+					? 'always'
+					: route_match.route.nodes.reduce((slash, node) => node?.slash ?? slash, 'never');
+			page_url.pathname = normalize_path(page_url.pathname, trailing_slash);
 
 			const invalidated = parse_invalidated(
 				request_url.searchParams.get('x-sveltekit-invalidated'),

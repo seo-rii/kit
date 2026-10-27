@@ -3,6 +3,7 @@ import { execPath } from 'node:process';
 import * as devalue from 'devalue';
 import { expect, test, vi } from 'vitest';
 import { exec, parse_route_id } from '../../utils/routing.js';
+import { normalize_path } from '../../utils/url.js';
 import { create_service_worker_resolver } from './service_worker_resolver.js';
 
 /**
@@ -79,6 +80,7 @@ function instantiate_resolver(
 	})
 		.replace("import * as devalue from 'devalue';", '')
 		.replace(/^import \{ exec \} from "[^"]+";$/m, '')
+		.replace(/^import \{ normalize_path \} from "[^"]+";$/m, '')
 		.replace(
 			/^import \* as (worker_\d+) from ("[^"]+");$/gm,
 			(_, name, file) => `const ${name} = workers[${file}];`
@@ -90,6 +92,7 @@ function instantiate_resolver(
 	const factory = new Function(
 		'devalue',
 		'exec',
+		'normalize_path',
 		'workers',
 		'universal_hooks',
 		'worker_matchers',
@@ -101,6 +104,7 @@ function instantiate_resolver(
 	return factory(
 		devalue,
 		exec,
+		normalize_path,
 		workers,
 		hooks,
 		matchers,
@@ -391,7 +395,9 @@ for (const strategy of ['worker-first', 'network-first']) {
 			const data =
 				method === 'GET' ? devalue.unflatten(body.nodes[0].data) : devalue.parse(body.data);
 
-			expect(data).toEqual({ pathname: route.pathname });
+			expect(data).toEqual({
+				pathname: method === 'GET' && route.pathname === '/app' ? '/app/' : route.pathname
+			});
 			expect(handler).toHaveBeenCalledOnce();
 			expect(fetch).toHaveBeenCalledTimes(strategy === 'network-first' ? 1 : 0);
 		});
@@ -657,7 +663,7 @@ test('adds the deployment version to worker data responses', async () => {
 	expect(response.headers.get('x-sveltekit-version')).toBe('test-version');
 });
 
-test('applies the universal reroute hook before matching a worker route', async () => {
+test('applies reroute before matching and normalizing the worker load URL', async () => {
 	/** @type {URL | undefined} */
 	let reroute_url;
 	const reroute = vi.fn((/** @type {{ url: URL }} */ { url }) => {
@@ -667,7 +673,8 @@ test('applies the universal reroute hook before matching a worker route', async 
 	const manifest = create_manifest({
 		hooks: { client: null, server: null, universal: 'src/hooks.js' },
 		route_id: '/canonical',
-		pattern: /^\/canonical\/?$/
+		pattern: /^\/canonical\/?$/,
+		trailing_slash: 'always'
 	});
 	const { resolve } = instantiate_resolver(manifest, {
 		hooks: { reroute },
@@ -690,9 +697,112 @@ test('applies the universal reroute hook before matching a worker route', async 
 	expect(reroute_url?.pathname).toBe('/localized');
 	expect(devalue.unflatten(body.nodes[0].data)).toEqual({
 		route: '/canonical',
-		visible_pathname: '/localized'
+		visible_pathname: '/localized/'
 	});
 });
+
+test.each([
+	{ trailing_slash: 'always', request_slash: false, expected: '/target/' },
+	{ trailing_slash: 'always', request_slash: true, expected: '/target/' },
+	{ trailing_slash: 'never', request_slash: false, expected: '/target' },
+	{ trailing_slash: 'never', request_slash: true, expected: '/target' },
+	{ trailing_slash: 'ignore', request_slash: false, expected: '/target' },
+	{ trailing_slash: 'ignore', request_slash: true, expected: '/target/' },
+	{ trailing_slash: undefined, request_slash: true, expected: '/target' }
+])(
+	'normalizes the worker load URL with trailingSlash=$trailing_slash and request slash=$request_slash',
+	async ({ trailing_slash, request_slash, expected }) => {
+		const manifest = create_manifest({
+			trailing_slash: /** @type {import('types').TrailingSlash | undefined} */ (trailing_slash)
+		});
+		const { resolve } = instantiate_resolver(manifest, {
+			workers: {
+				'/src/routes/target/+page.worker.js': {
+					/** @param {{ url: URL }} event */
+					load: ({ url }) => ({
+						pathname: url.pathname,
+						href: url.href,
+						relative: new URL('next', url).pathname
+					})
+				}
+			}
+		});
+		const url = new URL('https://example.com/target/__data.json?value=1');
+		url.searchParams.set('x-sveltekit-invalidated', '1');
+		if (request_slash) url.searchParams.set('x-sveltekit-trailing-slash', '1');
+
+		const response = await resolve(new Request(url), { strategy: 'worker-first' });
+		const body = await response.json();
+		expect(devalue.unflatten(body.nodes[0].data)).toEqual({
+			pathname: expected,
+			href: `https://example.com${expected}?value=1`,
+			relative: expected === '/target/' ? '/target/next' : '/next'
+		});
+	}
+);
+
+test.each([
+	{ layout_slash: 'always', page_slash: undefined, expected: '/target/' },
+	{ layout_slash: 'always', page_slash: 'never', expected: '/target' },
+	{ layout_slash: 'never', page_slash: 'always', expected: '/target/' }
+])(
+	'normalizes the load URL with layout=$layout_slash and page=$page_slash during partial invalidation',
+	async ({ layout_slash, page_slash, expected }) => {
+		const manifest = create_manifest({
+			trailing_slash: /** @type {import('types').TrailingSlash | undefined} */ (page_slash)
+		});
+		manifest.nodes.unshift({
+			depth: 0,
+			universal: 'src/routes/+layout.js',
+			page_options: { trailingSlash: /** @type {import('types').TrailingSlash} */ (layout_slash) }
+		});
+		manifest.routes[0].page = { layouts: [0], errors: [], leaf: 1 };
+		const { resolve } = instantiate_resolver(manifest, {
+			workers: {
+				'/src/routes/target/+page.worker.js': {
+					/** @param {{ url: URL }} event */
+					load: ({ url }) => ({ pathname: url.pathname })
+				}
+			}
+		});
+
+		const response = await resolve(
+			new Request('https://example.com/target/__data.json?x-sveltekit-invalidated=01'),
+			{ strategy: 'worker-first' }
+		);
+		const body = await response.json();
+		expect(body.nodes[0]).toEqual({ type: 'skip' });
+		expect(devalue.unflatten(body.nodes[1].data)).toEqual({ pathname: expected });
+	}
+);
+
+for (const route_id of ['/', '/(group)']) {
+	test.each(['never', 'ignore'])(
+		`always includes the slash at the base root ${route_id} with trailingSlash=%s`,
+		async (trailing_slash) => {
+			const manifest = create_manifest({
+				route_id,
+				...parse_route_id(route_id),
+				trailing_slash: /** @type {import('types').TrailingSlash} */ (trailing_slash)
+			});
+			const { resolve } = instantiate_resolver(manifest, {
+				base: '/app',
+				workers: {
+					'/src/routes/target/+page.worker.js': {
+						/** @param {{ url: URL }} event */
+						load: ({ url }) => ({ pathname: url.pathname })
+					}
+				}
+			});
+
+			const response = await resolve(new Request('https://example.com/app/__data.json'), {
+				strategy: 'worker-first'
+			});
+			const body = await response.json();
+			expect(devalue.unflatten(body.nodes[0].data)).toEqual({ pathname: '/app/' });
+		}
+	);
+}
 
 test('serializes worker data with universal transport encoders and node slash metadata', async () => {
 	class Custom {
