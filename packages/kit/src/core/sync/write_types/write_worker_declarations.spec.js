@@ -195,6 +195,33 @@ test.each([
 				'/// <reference lib="webworker" />\nexport interface Marker {}'
 			);
 			write(
+				'node_modules/conditional-worker-lib/package.json',
+				JSON.stringify({
+					name: 'conditional-worker-lib',
+					type: 'module',
+					exports: {
+						'.': { import: './import.d.ts', require: './require.d.ts' }
+					}
+				})
+			);
+			write(
+				'node_modules/conditional-worker-lib/import.d.ts',
+				"export interface Payload { kind: 'import' }"
+			);
+			const required_package = write(
+				'node_modules/conditional-worker-lib/require.d.ts',
+				'/// <reference lib="webworker" />\nexport interface Payload { kind: "require" }'
+			);
+			const conditional_declaration = write(
+				'src/lib/conditional.d.ts',
+				`
+				import type { Payload as Imported } from 'conditional-worker-lib';
+				import type { Payload as Required } from 'conditional-worker-lib' with { 'resolution-mode': 'require' };
+				export interface Conditional { imported: Imported; required: Required }
+				export declare function conditional(): Conditional;
+				`
+			);
+			write(
 				'node_modules/ambient-worker-lib/package.json',
 				JSON.stringify({ name: 'ambient-worker-lib', types: 'index.d.ts' })
 			);
@@ -236,6 +263,7 @@ test.each([
 				import { model as local_model, brand as local_brand } from '$lib/model.js';
 				import { model as external_model, brand as external_brand } from 'nominal-worker-lib';
 				import { referenced_payload } from 'referenced-worker-lib';
+				import { conditional } from '$lib/conditional.js';
 				import { model as shared_local_model, async_brand as shared_local_brand, nullable_brand, first_brand } from '$lib/shared-model.js';
 				import { model as shared_external_model, async_brand as shared_external_brand } from 'shared-ts-lib';
 				import { worker_brand } from '$lib/worker-only.js';
@@ -246,7 +274,7 @@ test.each([
 				import { ambient_payload } from 'ambient-worker-lib';
 				${annotated && extension === 'ts' ? "import type { PageWorkerLoad, PageWorkerActions } from './$worker-types';" : ''}
 				${annotated && extension === 'js' ? "/** @type {import('./$worker-types').PageWorkerLoad} */" : ''}
-				export const load${annotated && extension === 'ts' ? ': PageWorkerLoad' : ''} = async (${annotated ? '{ url }' : ''}) => ({ payload: payload(), package_payload: package_payload(), local_model: local_model(), local_brand: local_brand(), external_model: external_model(), external_brand: external_brand(), shared_local_model: shared_local_model(), shared_local_brand: await shared_local_brand(), shared_external_model: shared_external_model(), shared_external_brand: await shared_external_brand(), nullable_brand: nullable_brand(), first_brand: first_brand(), worker_brand: worker_brand(), online: worker_navigator().onLine, value: options.value, dynamic_payload: await dynamic_payload(), jsdoc_payload: jsdoc_payload(), ambient_payload: ambient_payload(), referenced_payload: referenced_payload(), nullable: Math.random() > 0.5 ? 'value' : null, pathname: ${annotated ? 'url.pathname' : "'/'"} });
+				export const load${annotated && extension === 'ts' ? ': PageWorkerLoad' : ''} = async (${annotated ? '{ url }' : ''}) => ({ payload: payload(), package_payload: package_payload(), local_model: local_model(), local_brand: local_brand(), external_model: external_model(), external_brand: external_brand(), shared_local_model: shared_local_model(), shared_local_brand: await shared_local_brand(), shared_external_model: shared_external_model(), shared_external_brand: await shared_external_brand(), nullable_brand: nullable_brand(), first_brand: first_brand(), worker_brand: worker_brand(), online: worker_navigator().onLine, value: options.value, dynamic_payload: await dynamic_payload(), jsdoc_payload: jsdoc_payload(), ambient_payload: ambient_payload(), referenced_payload: referenced_payload(), conditional: conditional(), nullable: Math.random() > 0.5 ? 'value' : null, pathname: ${annotated ? 'url.pathname' : "'/'"} });
 				${annotated && extension === 'js' ? "/** @type {import('./$worker-types').PageWorkerActions} */" : ''}
 				export const actions${annotated && extension === 'ts' ? ': PageWorkerActions' : ''} = {
 					default: () => (${annotated ? "{ type: 'success', status: 200, data: { saved: true, ...payload() } }" : '{ saved: true, ...payload() }'})
@@ -280,6 +308,8 @@ test.each([
 				worker_data.dynamic_payload.value.toUpperCase();
 				worker_data.jsdoc_payload.nested.count.toFixed();
 				worker_data.referenced_payload.count.toFixed();
+				const imported: 'import' = worker_data.conditional.imported.kind;
+				const required: 'require' = worker_data.conditional.required.kind;
 				// @ts-expect-error references must retain the package's actual payload type
 				worker_data.referenced_payload.count.toUpperCase();
 				worker_data.ambient_payload.nested.scope.toUpperCase();
@@ -329,6 +359,8 @@ test.each([
 			expect(app_program.getSourceFile(external_shared_source)).toBeDefined();
 			expect(app_program.getSourceFile(referenced_package)).toBeUndefined();
 			expect(app_program.getSourceFile(referenced_globals)).toBeUndefined();
+			expect(app_program.getSourceFile(conditional_declaration)).toBeUndefined();
+			expect(app_program.getSourceFile(required_package)).toBeUndefined();
 			expect(
 				app_program.getSourceFiles().some((file) => /lib\.webworker\.d\.ts$/.test(file.fileName))
 			).toBe(false);

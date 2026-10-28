@@ -246,7 +246,15 @@ export function write_worker_declarations(config, manifest, root) {
 			if (dependency) imported.add(path.resolve(dependency));
 		}
 		visit_imports(source, (literal) => {
-			const resolved = ts.resolveModuleName(literal.text, file, options, ts.sys).resolvedModule;
+			const resolved = ts.resolveModuleName(
+				literal.text,
+				file,
+				options,
+				host,
+				undefined,
+				undefined,
+				program.getModeForUsageLocation(source, literal)
+			).resolvedModule;
 			const dependency = ambient_files.get(literal.text) ?? resolved?.resolvedFileName;
 			if (dependency) imported.add(path.resolve(dependency));
 		});
@@ -450,13 +458,18 @@ export function write_worker_declarations(config, manifest, root) {
 			ts.ScriptTarget.Latest,
 			true
 		);
+		// Re-parsing emitted text loses the original file's ESM/CommonJS context.
+		source.impliedNodeFormat = program.getSourceFile(original_file)?.impliedNodeFormat;
 		const code = new MagicString(text);
 		visit_imports(source, (node) => {
 			const resolved = ts.resolveModuleName(
 				node.text,
 				original_file,
 				program.getCompilerOptions(),
-				ts.sys
+				host,
+				undefined,
+				undefined,
+				program.getModeForUsageLocation(source, node)
 			).resolvedModule;
 			const ambient = ambient_declarations.get(node.text);
 			const resolved_file =
@@ -475,8 +488,8 @@ export function write_worker_declarations(config, manifest, root) {
 						? worker_declaration(config, /** @type {string} */ (resolved_file), root)
 						: /** @type {string} */ (resolved_file);
 				const relative = posixify(path.relative(path.dirname(target), destination)).replace(
-					/\.d\.ts$/,
-					'.js'
+					/\.d\.([cm]?)ts$/,
+					'.$1js'
 				);
 				code.overwrite(node.getStart(source), node.end, JSON.stringify(`./${relative}`));
 			}
