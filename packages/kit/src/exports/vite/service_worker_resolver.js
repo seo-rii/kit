@@ -801,17 +801,13 @@ export function create_service_worker_resolver(manifest_data, options = {}) {
 
 			const controller = new AbortController();
 			const timeout = has_timeout ? setTimeout(() => controller.abort(), options.timeout) : null;
-			const abort = () => controller.abort(options.signal?.reason);
+			// Preserve both request and caller cancellation while consuming the raw response body.
+			const signal = AbortSignal.any(
+				[request.signal, options.signal, controller.signal].filter((signal) => signal !== undefined)
+			);
 
-			if (options.signal?.aborted) {
-				abort();
-			} else {
-				options.signal?.addEventListener('abort', abort, { once: true });
-			}
-
-			return fetch(request, { signal: controller.signal }).finally(() => {
+			return fetch(request, { signal }).finally(() => {
 				if (timeout !== null) clearTimeout(timeout);
-				options.signal?.removeEventListener('abort', abort);
 			});
 		}
 

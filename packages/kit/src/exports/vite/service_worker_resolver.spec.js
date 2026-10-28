@@ -1235,6 +1235,52 @@ test('rejects worker modules that mix default and named actions', async () => {
 	expect(result.error.message).toContain('default action cannot be used');
 });
 
+for (const method of ['GET', 'POST']) {
+	for (const cancellation of ['before retry', 'during retry']) {
+		test.each(['timeout', 'signal'])(
+			`preserves ${method} request cancellation ${cancellation} with a server %s option`,
+			async (option) => {
+				const controller = new AbortController();
+				const reason = new Error('original request canceled');
+				const custom_controller = new AbortController();
+				/** @type {AbortSignal | undefined} */
+				let retry_signal;
+				const fetch = vi.fn((_request, init) => {
+					retry_signal = init.signal;
+					if (cancellation === 'during retry') controller.abort(reason);
+					return Promise.resolve(new Response('network'));
+				});
+				const handler = async (/** @type {import('@sveltejs/kit').WorkerLoadEvent} */ event) => {
+					if (cancellation === 'before retry') controller.abort(reason);
+					await event.server(
+						option === 'timeout' ? { timeout: 60000 } : { signal: custom_controller.signal }
+					);
+					return { local: true };
+				};
+				const { resolve } = instantiate_resolver(create_manifest(), {
+					fetch,
+					workers: {
+						'/src/routes/target/+page.worker.js': {
+							load: handler,
+							actions: { default: handler }
+						}
+					}
+				});
+
+				await expect(
+					resolve(create_worker_request(method, { signal: controller.signal }), {
+						strategy: 'worker-first'
+					})
+				).rejects.toBe(reason);
+				expect(fetch).toHaveBeenCalledOnce();
+				expect(retry_signal?.aborted).toBe(true);
+				expect(retry_signal?.reason).toBe(reason);
+				expect(custom_controller.signal.aborted).toBe(false);
+			}
+		);
+	}
+}
+
 test('passes an already-aborted signal to server fetches as aborted', async () => {
 	const controller = new AbortController();
 	controller.abort();
@@ -1273,6 +1319,45 @@ test('passes an already-aborted signal to server fetches as aborted', async () =
 		data: { aborted: 'true' }
 	});
 });
+
+for (const method of ['GET', 'POST']) {
+	test.each(['request', 'caller'])(
+		`preserves %s cancellation after ${method} server retry headers resolve`,
+		async (source) => {
+			const request_controller = new AbortController();
+			const caller_controller = new AbortController();
+			const reason = new Error('response body canceled');
+			/** @type {AbortSignal | undefined} */
+			let retry_signal;
+			const fetch = vi.fn((_request, init) => {
+				retry_signal = init.signal;
+				return Promise.resolve(new Response('network'));
+			});
+			const handler = async (/** @type {import('@sveltejs/kit').WorkerLoadEvent} */ event) => {
+				await event.server({ timeout: 60000, signal: caller_controller.signal });
+				(source === 'request' ? request_controller : caller_controller).abort(reason);
+				return { local: true };
+			};
+			const { resolve } = instantiate_resolver(create_manifest(), {
+				fetch,
+				workers: {
+					'/src/routes/target/+page.worker.js': {
+						load: handler,
+						actions: { default: handler }
+					}
+				}
+			});
+			const response = resolve(
+				create_worker_request(method, { signal: request_controller.signal }),
+				{ strategy: 'worker-first' }
+			);
+			if (source === 'request') await expect(response).rejects.toBe(reason);
+			else expect((await response).status).toBe(200);
+			expect(retry_signal?.aborted).toBe(true);
+			expect(retry_signal?.reason).toBe(reason);
+		}
+	);
+}
 
 test('treats timeout zero as an immediate server fetch timeout', async () => {
 	vi.useFakeTimers();
