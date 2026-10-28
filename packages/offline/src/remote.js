@@ -217,7 +217,26 @@ function get_freshness(response, received_at, age) {
 	)
 		return null;
 
-	const directives = (response.headers.get('cache-control') ?? '').split(',').map((v) => v.trim());
+	const cache_control = response.headers.get('cache-control') ?? '';
+	/** @type {string[]} */
+	const directives = [];
+	let quoted = false;
+	let start = 0;
+	for (let i = 0; i < cache_control.length; i += 1) {
+		const char = cache_control[i];
+		if (quoted && char === '\\') {
+			i += 1;
+		} else if (char === '"') {
+			quoted = !quoted;
+		} else if (char === ',' && !quoted) {
+			directives.push(cache_control.slice(start, i).trim());
+			start = i + 1;
+		}
+	}
+	// Commas and escaped quotes in extension arguments cannot introduce directives.
+	// An unfinished quoted argument makes the policy ambiguous, so never opt it in.
+	if (quoted) return null;
+	directives.push(cache_control.slice(start).trim());
 	if (directives.some((value) => /^(no-store|no-cache)(?:\s*=|$)/i.test(value))) return null;
 	const max_age_directives = directives.filter((value) => /^max-age(?:\s*=|$)/i.test(value));
 	if (max_age_directives.length !== 1) return null;

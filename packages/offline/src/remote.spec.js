@@ -350,6 +350,61 @@ describe('explicit cache opt-in', () => {
 		}
 	);
 
+	test.each([
+		'private, x-policy="start, max-age=60, end"',
+		String.raw`private, x-policy="escaped \", max-age=60, end"`,
+		'max-age=60, x-policy="unterminated',
+		'max-age=60, x-policy="ignored, no-store", no-store'
+	])('does not infer cache opt-in from quoted or malformed directives: %s', async (header) => {
+		const { storage, operations } = memory_storage();
+		const response = cacheable('not opted in', { 'cache-control': header });
+		const clone = vi.spyOn(response, 'clone');
+		const fetch = vi
+			.fn()
+			.mockResolvedValueOnce(cacheable('previous value'))
+			.mockResolvedValueOnce(response)
+			.mockRejectedValue(offline_error);
+		const { handle } = create(fetch, storage);
+		await handle(new Request(query_url));
+
+		expect(await handle(new Request(query_url))).toBe(response);
+		await expect(handle(new Request(query_url))).rejects.toBe(offline_error);
+		expect(clone).not.toHaveBeenCalled();
+		expect(operations.filter((operation) => operation === 'put')).toHaveLength(1);
+		expect(operations).toContain('delete');
+	});
+
+	test.each([
+		'max-age=60, x-policy="start, no-store, end"',
+		'max-age="60", x-policy="start, max-age=0, no-cache, end"',
+		String.raw`x-policy="escaped \", no-store, end", max-age=60`,
+		String.raw`x-policy="escaped \\", max-age=60`
+	])('preserves valid cache opt-in around quoted extensions: %s', async (header) => {
+		const { storage } = memory_storage();
+		const fetch = vi
+			.fn()
+			.mockResolvedValueOnce(cacheable('opted in', { 'cache-control': header }))
+			.mockRejectedValue(offline_error);
+		const { handle } = create(fetch, storage);
+		await handle(new Request(query_url));
+
+		expect(await (await handle(new Request(query_url))).text()).toBe('opted in');
+	});
+
+	test('deletes a persisted value whose max-age was only part of a quoted extension', async () => {
+		const { storage, namespaces } = memory_storage();
+		const fetch = vi.fn().mockResolvedValueOnce(cacheable()).mockRejectedValue(offline_error);
+		const request = new Request(query_url);
+		await create(fetch, storage).handle(request);
+		const entries = namespaces.values().next().value;
+		const entry = entries?.get(query_url);
+		if (!entry) throw new Error('Expected a persisted remote response');
+		entry.response.headers.set('cache-control', 'private, x-policy="start, max-age=60, end"');
+
+		await expect(create(fetch, storage).handle(request)).rejects.toBe(offline_error);
+		expect(entries?.has(query_url)).toBe(false);
+	});
+
 	test('refuses and deletes a Vary: Cookie entry stored by an earlier coordinator', async () => {
 		const { storage, namespaces } = memory_storage();
 		const fetch = vi.fn().mockResolvedValueOnce(cacheable()).mockRejectedValue(offline_error);
