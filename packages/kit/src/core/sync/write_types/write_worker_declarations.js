@@ -389,6 +389,8 @@ export function write_worker_declarations(config, manifest, root) {
 	const origins = new Map();
 	/** @type {Map<string, string>} */
 	const ambient_declarations = new Map();
+	/** @type {Map<string, import('typescript').ResolutionMode>} */
+	const ambient_formats = new Map();
 	for (const [file, source] of sources) {
 		if (source.isDeclarationFile && isolated.has(file)) {
 			if (!ts.isExternalModule(source)) {
@@ -415,20 +417,27 @@ export function write_worker_declarations(config, manifest, root) {
 					}
 					const name = /** @type {import('typescript').StringLiteral} */ (module.name).text;
 					const target = `${file}.ambient-${createHash('sha256').update(name).digest('hex').slice(0, 24)}.d.ts`;
+					const commonjs = module.body.statements.some(
+						(statement) => ts.isExportAssignment(statement) && statement.isExportEquals
+					);
 					const statements = module.body.statements.map((statement) => {
-						const exported =
-							ts.canHaveModifiers(statement) &&
-							ts
-								.getModifiers(statement)
-								?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword);
+						const modifiers = ts.canHaveModifiers(statement)
+							? ts.getModifiers(statement)
+							: undefined;
 						const prefix =
-							exported ||
+							modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ||
 							ts.isImportDeclaration(statement) ||
 							ts.isImportEqualsDeclaration(statement) ||
 							ts.isExportDeclaration(statement) ||
 							ts.isExportAssignment(statement)
 								? ''
-								: 'export ';
+								: !commonjs
+									? 'export '
+									: ts.isInterfaceDeclaration(statement) ||
+										  ts.isTypeAliasDeclaration(statement) ||
+										  modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.DeclareKeyword)
+										? ''
+										: 'declare ';
 						return prefix + statement.getText(source);
 					});
 					const previous = declarations.get(target);
@@ -440,6 +449,7 @@ export function write_worker_declarations(config, manifest, root) {
 					);
 					origins.set(target, file);
 					ambient_declarations.set(name, target);
+					ambient_formats.set(target, commonjs ? ts.ModuleKind.CommonJS : ts.ModuleKind.ESNext);
 				}
 			} else {
 				declarations.set(file, source.text);
@@ -447,10 +457,28 @@ export function write_worker_declarations(config, manifest, root) {
 		}
 	}
 
+	/** @type {Map<string, string>} */
+	const destinations = new Map();
+	for (const file of declarations.keys()) {
+		let target = worker_declaration(config, file, root);
+		// Route entries keep their stable $types import path. Relocated dependencies
+		// must retain their module format instead of inheriting the app package's type.
+		if (!worker_files.has(file)) {
+			const format = ambient_formats.get(file) ?? sources.get(file)?.impliedNodeFormat;
+			if (format !== undefined) {
+				target = target.replace(
+					/\.d\.ts$/,
+					format === ts.ModuleKind.CommonJS ? '.d.cts' : '.d.mts'
+				);
+			}
+		}
+		destinations.set(file, target);
+	}
+
 	/** @type {Set<string>} */
 	const outputs = new Set();
 	for (const [file, text] of declarations) {
-		const target = worker_declaration(config, file, root);
+		const target = /** @type {string} */ (destinations.get(file));
 		const original_file = origins.get(file) ?? file;
 		const source = ts.createSourceFile(
 			file.replace(/\.[^.]+$/, '.d.ts'),
@@ -482,11 +510,9 @@ export function write_worker_declarations(config, manifest, root) {
 						(resolved_source && ts.isExternalModule(resolved_source)) ||
 						node.text.startsWith('.')))
 			) {
-				const destination = ambient
-					? worker_declaration(config, ambient, root)
-					: declarations.has(/** @type {string} */ (resolved_file))
-						? worker_declaration(config, /** @type {string} */ (resolved_file), root)
-						: /** @type {string} */ (resolved_file);
+				const destination = /** @type {string} */ (
+					destinations.get(ambient ?? resolved_file ?? '') ?? resolved_file
+				);
 				const relative = posixify(path.relative(path.dirname(target), destination)).replace(
 					/\.d\.([cm]?)ts$/,
 					'.$1js'
@@ -496,9 +522,7 @@ export function write_worker_declarations(config, manifest, root) {
 		});
 		for (const reference of source.referencedFiles) {
 			const original = path.resolve(path.dirname(original_file), reference.fileName);
-			const destination = declarations.has(original)
-				? worker_declaration(config, original, root)
-				: original;
+			const destination = destinations.get(original) ?? original;
 			code.overwrite(
 				reference.pos,
 				reference.end,
@@ -509,9 +533,7 @@ export function write_worker_declarations(config, manifest, root) {
 			const resolved = resolve_type_reference(reference, original_file);
 			if (!resolved) continue;
 			const original = path.resolve(resolved);
-			const destination = declarations.has(original)
-				? worker_declaration(config, original, root)
-				: original;
+			const destination = destinations.get(original) ?? original;
 			// A package lookup would reopen the original graph, including worker libs.
 			// A path reference also preserves the exact conditional-export resolution.
 			const start = text.lastIndexOf('///', reference.pos);
