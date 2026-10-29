@@ -142,11 +142,11 @@ export function create_data_resolver(routes, hooks, matchers, options) {
 						uses,
 						...(node.slash ? { slash: node.slash } : {})
 					};
-					if (request.signal.aborted) {
+					if (!invalidated[index] || request.signal.aborted) {
 						try {
-							// Observe deferred values, including custom transports, even when this
-							// completed load will be discarded. The cancellation remains the result.
-							serializer.add_node(index, result);
+							// Lazy parents may not appear in the response. Observe their deferred
+							// values before another load yields, without adding response chunks.
+							(invalidated[index] ? serializer : discarded_serializer).add_node(index, result);
 						} finally {
 							request.signal.throwIfAborted();
 						}
@@ -156,6 +156,11 @@ export function create_data_resolver(routes, hooks, matchers, options) {
 			};
 
 			const serializer = create_data_serializer({
+				encoders,
+				onError: serialize_error,
+				onSerializationError: (error) => error
+			});
+			const discarded_serializer = create_data_serializer({
 				encoders,
 				onError: serialize_error,
 				onSerializationError: (error) => error

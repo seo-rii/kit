@@ -351,6 +351,115 @@ test('declines when parent requires a missing non-invalidated ancestor', async (
 	).toBeNull();
 });
 
+for (const encoding of ['plain', 'transport']) {
+	test.each(['data', 'redirect', 'error', 'missing parent'])(
+		`observes omitted ${encoding} parent promises before returning %s`,
+		(outcome) => {
+			const output = execFileSync(
+				process.execPath,
+				[
+					'--unhandled-rejections=strict',
+					'--input-type=module',
+					'--eval',
+					`
+						import { create_data_resolver } from ${JSON.stringify(new URL('./data.js', import.meta.url).href)};
+						class DeferredValue { #value; constructor(value) { this.#value = value; } get value() { return this.#value; } }
+						const resolve = create_data_resolver([{
+							id: '/items', pattern: /^\\/items$/, params: [], nodes: [
+								{ id: '/', kind: 'layout', server: true },
+								{ id: '/missing', kind: 'layout', server: ${outcome === 'missing parent'} },
+								{ id: '/items', kind: 'page', server: true }
+							]
+						}], { transport: { DeferredValue: {
+							encode: (value) => value instanceof DeferredValue && [value.value],
+							decode: ([value]) => new DeferredValue(value)
+						} } }, {}, { base: '', version: 'test', versionCheck: true, origin: 'https://example.com' });
+						const response = await resolve(new Request('https://example.com/items/__data.json?x-sveltekit-invalidated=001'), {
+							'/': { layout: () => {
+								const later = Promise.reject(new Error('Omitted parent failure'));
+								return { later: ${encoding === 'plain' ? 'later' : 'new DeferredValue(later)'} };
+							} },
+							'/items': { page: async ({ parent }) => {
+								await parent();
+								await new Promise(setImmediate);
+								${outcome === 'redirect' ? "throw { status: 307, location: '/login' };" : outcome === 'error' ? "throw new Error('Page failure');" : 'return { ready: true };'}
+							} }
+						});
+						process.stdout.write(JSON.stringify(response === null ? null : {
+							type: response.headers.get('content-type'), body: await response.text()
+						}));
+						await new Promise(setImmediate);
+					`
+				],
+				{ encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
+			);
+			const result = JSON.parse(output);
+			if (outcome === 'missing parent') {
+				expect(result).toBeNull();
+			} else if (outcome === 'redirect') {
+				expect(JSON.parse(result.body)).toEqual({
+					type: 'redirect',
+					status: 307,
+					location: '/login'
+				});
+			} else {
+				expect(result.type).toBe('application/json');
+				const data = JSON.parse(result.body);
+				expect(data.nodes.slice(0, 2)).toEqual([{ type: 'skip' }, { type: 'skip' }]);
+				if (outcome === 'data') {
+					expect(devalue.unflatten(data.nodes[2].data)).toEqual({ ready: true });
+				} else {
+					expect(data.nodes[2]).toEqual({
+						type: 'error',
+						error: { message: 'Page failure', status: 500 }
+					});
+				}
+			}
+		}
+	);
+}
+
+test('does not include or wait for omitted parent chunks', async () => {
+	class DeferredValue {
+		/** @param {Promise<string>} value */
+		constructor(value) {
+			this.value = value;
+		}
+	}
+	const later = new DeferredValue(Promise.resolve('forwarded'));
+	const resolve = resolver(
+		[
+			route('/items', [
+				{ id: '/', kind: 'layout', server: true },
+				{ id: '/items', kind: 'page', server: true }
+			])
+		],
+		{
+			transport: {
+				DeferredValue: {
+					encode: (value) => value instanceof DeferredValue && [value.value],
+					decode: ([value]) => new DeferredValue(value)
+				}
+			}
+		}
+	);
+	const response = await resolve(request('/items', { invalidated: '01' }), {
+		'/': { layout: () => ({ never: new Promise(() => {}), later }) },
+		'/items': {
+			page: async ({ parent }) => {
+				const data = await parent();
+				expect(data.later).toBe(later);
+				return { later: data.later };
+			}
+		}
+	});
+	const [initial, chunk, ...extra] = await read(response);
+	expect(initial.nodes[0]).toEqual({ type: 'skip' });
+	expect(chunk).toMatchObject({ type: 'chunk', id: 1 });
+	expect(devalue.unflatten(chunk.data)).toBe('forwarded');
+	expect(extra).toEqual([]);
+});
+
 test('streams fallback values through the custom transport', async () => {
 	class Label {
 		/** @param {string} text */
