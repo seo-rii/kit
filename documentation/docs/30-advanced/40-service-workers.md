@@ -268,6 +268,8 @@ The resolver applies the universal [`reroute`](hooks#Universal-hooks-reroute) ho
 
 Worker data replaces the matching layout or page server data for that request. If an invalidated server layout or page does not have a corresponding worker module, the resolver leaves the original network failure in place instead of returning partial route data. Promises returned from worker loads are streamed using SvelteKit's data response format, so `{#await data.products}` continues to work during client navigation.
 
+Data fallbacks also require statically analyzable page options in every participating layout and page. If an option is computed at runtime or re-exported from another module, the resolver leaves the data request to the network because it cannot determine the correct `trailingSlash` policy. Enhanced worker actions remain available for these routes.
+
 Worker loads cannot replace universal `+layout.js` or `+page.js` loads, and worker actions only run for enhanced SvelteKit action requests.
 
 ## Type safety

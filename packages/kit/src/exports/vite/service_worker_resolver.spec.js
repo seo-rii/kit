@@ -1,10 +1,38 @@
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { execPath } from 'node:process';
 import * as devalue from 'devalue';
-import { expect, test, vi } from 'vitest';
+import { afterEach, expect, test, vi } from 'vitest';
+import { validate_config } from '../../core/config/index.js';
+import create_manifest_data from '../../core/sync/create_manifest_data/index.js';
 import { exec, parse_route_id } from '../../utils/routing.js';
 import { normalize_path } from '../../utils/url.js';
 import { create_service_worker_resolver } from './service_worker_resolver.js';
+
+/** @type {string[]} */
+const fixture_directories = [];
+
+afterEach(() => {
+	for (const directory of fixture_directories.splice(0)) {
+		fs.rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+/** @param {Record<string, string>} files */
+function create_manifest_from_files(files) {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kit-worker-page-options-'));
+	fixture_directories.push(root);
+	for (const [name, content] of Object.entries(files)) {
+		const file = path.join(root, name);
+		fs.mkdirSync(path.dirname(file), { recursive: true });
+		fs.writeFileSync(file, content);
+	}
+	const config = validate_config({ kit: { experimental: { serviceWorkerFallbacks: true } } });
+	config.kit.files.routes = path.join(root, 'src/routes');
+	return create_manifest_data({ config, cwd: root });
+}
 
 /**
  * @param {{
@@ -31,7 +59,7 @@ function create_manifest({
 		depth: 0,
 		server: 'src/routes/target/+page.server.js',
 		worker: worker_file,
-		page_options: trailing_slash ? { trailingSlash: trailing_slash } : null
+		page_options: trailing_slash ? { trailingSlash: trailing_slash } : {}
 	};
 
 	return {
@@ -915,6 +943,107 @@ test.each([
 		});
 	}
 );
+
+test.each(['network-first', 'worker-first'])(
+	'declines data with unanalysable page options under %s without changing route precedence',
+	async (strategy) => {
+		const manifest = create_manifest_from_files({
+			'src/routes/catalog/+page.server.js': "export { trailingSlash } from './policy.js';",
+			'src/routes/catalog/policy.js': "export const trailingSlash = 'always';",
+			'src/routes/catalog/+page.worker.js': 'export const load = () => ({});',
+			'src/routes/expression/+page.server.js': "export const trailingSlash = String('always');",
+			'src/routes/expression/+page.worker.js': 'export const load = () => ({});',
+			'src/routes/(dynamic)/+layout.server.js': "export { trailingSlash } from './policy.js';",
+			'src/routes/(dynamic)/policy.js': "export const trailingSlash = 'always';",
+			'src/routes/(dynamic)/+layout.worker.js': 'export const load = () => ({});',
+			'src/routes/(dynamic)/inherited/+page.worker.js': 'export const load = () => ({});',
+			'src/routes/(dynamic)/override/+page.js': "export const trailingSlash = 'never';",
+			'src/routes/(dynamic)/override/+page.worker.js': 'export const load = () => ({});',
+			'src/routes/(dynamic)/reset/+page@.svelte': '',
+			'src/routes/(dynamic)/reset/+page.worker.js': 'export const load = () => ({});',
+			'src/routes/literal/+page.server.js': "export const trailingSlash = 'always';",
+			'src/routes/literal/+page.worker.js': 'export const load = () => ({});',
+			'src/routes/[slug]/+page.worker.js': 'export const load = () => ({});'
+		});
+		const load = vi.fn((/** @type {{ url: URL }} */ { url }) => ({
+			pathname: url.pathname,
+			relative: new URL('items', url).pathname
+		}));
+		const workers = Object.fromEntries(
+			manifest.nodes.filter((node) => node.worker).map((node) => [`/${node.worker}`, { load }])
+		);
+		const network_error = new Error('offline');
+		const fetch = vi.fn(() =>
+			strategy === 'network-first'
+				? Promise.reject(network_error)
+				: Promise.resolve(new Response('network'))
+		);
+		const { resolve } = instantiate_resolver(manifest, { fetch, workers });
+
+		for (const [id, pathname] of [
+			['/catalog', '/catalog'],
+			['/expression', '/expression'],
+			['/(dynamic)/inherited', '/inherited'],
+			['/(dynamic)/override', '/override']
+		]) {
+			const page = manifest.routes.find((route) => route.id === id)?.page;
+			expect(page).toBeTruthy();
+			const invalidated = '0'.repeat(page?.layouts.length ?? 0) + '1';
+			const request = new Request(
+				`https://example.com${pathname}/__data.json?x-sveltekit-trailing-slash=1&x-sveltekit-invalidated=${invalidated}`
+			);
+			if (strategy === 'network-first') {
+				await expect(resolve(request, { strategy })).rejects.toBe(network_error);
+			} else {
+				expect(await (await resolve(request, { strategy })).text()).toBe('network');
+			}
+		}
+		expect(load).not.toHaveBeenCalled();
+		expect(fetch).toHaveBeenCalledTimes(4);
+
+		for (const [pathname, expected] of [
+			['/literal', '/literal/'],
+			['/reset', '/reset'],
+			['/other', '/other']
+		]) {
+			const response = await resolve(new Request(`https://example.com${pathname}/__data.json`), {
+				strategy
+			});
+			const body = await response.json();
+			expect(devalue.unflatten(body.nodes.at(-1).data)).toEqual({
+				pathname: expected,
+				relative: expected === '/literal/' ? '/literal/items' : '/items'
+			});
+		}
+	}
+);
+
+test('keeps enhanced worker actions available when data page options cannot be analysed', async () => {
+	const manifest = create_manifest_from_files({
+		'src/routes/catalog/+page.server.js': "export { trailingSlash } from './policy.js';",
+		'src/routes/catalog/policy.js': "export const trailingSlash = 'always';",
+		'src/routes/catalog/+page.worker.js': 'export const actions = {};'
+	});
+	const load = vi.fn();
+	const action = vi.fn(() => ({ saved: true }));
+	const fetch = vi.fn();
+	const { resolve } = instantiate_resolver(manifest, {
+		fetch,
+		workers: { '/src/routes/catalog/+page.worker.js': { load, actions: { default: action } } }
+	});
+	const response = await resolve(
+		create_worker_request('POST', { url: 'https://example.com/catalog/' }),
+		{ strategy: 'worker-first' }
+	);
+	expect(await read_action_data(response)).toEqual({
+		type: 'success',
+		status: 200,
+		data: { saved: true }
+	});
+	expect(action).toHaveBeenCalledOnce();
+	expect(load).not.toHaveBeenCalled();
+	expect(fetch).not.toHaveBeenCalled();
+});
 
 test.each([
 	{ layout_slash: 'always', page_slash: undefined, expected: '/target/' },

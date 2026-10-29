@@ -42,7 +42,13 @@ export function create_service_worker_resolver(manifest_data, options = {}) {
 
 	const route_data = routes.map((route) => {
 		const page = route.page;
-		const nodes = (page ? [...page.layouts, page.leaf] : []).map((index) => {
+		const indices = page ? [...page.layouts, page.leaf] : [];
+		// Keep the route's precedence and actions, but do not guess the URL policy for
+		// data loads when a participating layout or page has dynamic options.
+		const unsupported_data = indices.some(
+			(index) => index !== undefined && manifest_data.nodes[index].page_options === null
+		);
+		const nodes = indices.map((index) => {
 			const node = index === undefined ? null : manifest_data.nodes[index];
 			if (!node) return 'null';
 
@@ -69,7 +75,7 @@ export function create_service_worker_resolver(manifest_data, options = {}) {
 				id: ${s(route.id)},
 				pattern: ${route.pattern},
 				params: ${s(route.params)},
-				nodes: [${nodes.join(', ')}]
+				nodes: [${nodes.join(', ')}]${unsupported_data ? ', unsupported_data: true' : ''}
 			}
 		`;
 	});
@@ -160,7 +166,7 @@ export function create_service_worker_resolver(manifest_data, options = {}) {
 
 			const route_match = await match_worker_route(page_url);
 			request.signal.throwIfAborted();
-			if (!route_match) return null;
+			if (!route_match || route_match.route.unsupported_data) return null;
 
 			const trailing_slash =
 				page_url.pathname === base || page_url.pathname === base + '/'
