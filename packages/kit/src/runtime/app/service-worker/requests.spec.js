@@ -50,6 +50,21 @@ test('classifies remote GETs using the opaque URL without decoding their argumen
 	expect(classify(input)).toEqual({ kind: 'remote-query', key: input.url });
 });
 
+test.each([
+	'/app/_custom/remote/module/query?payload=%23opaque&variant=2',
+	'/app/items/__data.json?filter=%23opaque&x-sveltekit-invalidated=01'
+])('uses one cache identity for URL fragments without changing the request: %s', (path) => {
+	const expected = classify(request(path));
+	for (const fragment of ['#one', '#two', '#']) {
+		const input = request(path + fragment);
+		const original_url = input.url;
+		expect(classify(input)).toEqual(expected);
+		expect(input.url).toBe(original_url);
+	}
+	expect(expected.key).toBe(new URL(path, origin).href);
+	expect(classify(request(path + '&variant=3')).key).not.toBe(expected.key);
+});
+
 test.each(['POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'])(
 	'classifies remote %s requests as mutations without consuming the body',
 	(method) => {

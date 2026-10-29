@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { createRemoteCache } from './remote.js';
+import { create_request_classifier } from '../../kit/src/runtime/app/service-worker/requests.js';
 /** @import { RemoteCacheOptions, RemoteRequestClassification } from './remote-public.js' */
 
 const query_url = 'https://example.com/app/remote/items?payload=one';
@@ -83,7 +84,7 @@ function memory_storage() {
 /**
  * @param {NonNullable<RemoteCacheOptions['fetch']>} fetch
  * @param {ReturnType<typeof memory_storage>['storage']} storage
- * @param {{ cacheName?: string; scope?: string }} [options]
+ * @param {Partial<Pick<RemoteCacheOptions, 'cacheName' | 'scope' | 'classifyRequest'>>} [options]
  */
 function create(fetch, storage, options = {}) {
 	return createRemoteCache({
@@ -155,6 +156,35 @@ test('returns the network response untouched and falls back to opaque cached byt
 	expect(fallback.headers.has('x-sveltekit-offline-stored-at')).toBe(false);
 	expect(await fallback.text()).toBe('{"data":"not decoded by the cache"}');
 	expect(fetch).toHaveBeenCalledTimes(2);
+});
+
+test('a no-store response fences pending reads with different URL fragments', async () => {
+	const { storage, namespaces, operations } = memory_storage();
+	const pending = deferred();
+	const fetch = vi
+		.fn()
+		.mockReturnValueOnce(pending.promise)
+		.mockResolvedValueOnce(new Response('revoked', { headers: { 'cache-control': 'no-store' } }))
+		.mockRejectedValue(offline_error);
+	const { handle } = create(fetch, storage, {
+		classifyRequest: create_request_classifier({
+			origin: 'https://example.com',
+			base: '',
+			appDir: 'app'
+		})
+	});
+	const old_read = handle(new Request(query_url + '#one'));
+	expect(await (await handle(new Request(query_url + '#two'))).text()).toBe('revoked');
+	pending.resolve(cacheable('old data'));
+	expect(await (await old_read).text()).toBe('old data');
+	expect(operations).not.toContain('put');
+	expect([...namespaces.values()].every((entries) => entries.size === 0)).toBe(true);
+	await expect(handle(new Request(query_url))).rejects.toBe(offline_error);
+	expect(fetch.mock.calls.map(([request]) => request.url)).toEqual([
+		query_url + '#one',
+		query_url + '#two',
+		query_url
+	]);
 });
 
 describe('response body transport failures', () => {

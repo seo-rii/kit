@@ -9,6 +9,8 @@ import { has_data_suffix } from '../../../pathname.js';
 export function create_request_classifier({ origin, base, appDir }) {
 	return (request) => {
 		const url = new URL(request.url);
+		// CacheStorage ignores fragments; invalidation must identify the same resource.
+		url.hash = '';
 		const other = /** @type {const} */ ({ kind: 'other', key: null });
 		if (
 			url.origin !== origin ||

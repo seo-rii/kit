@@ -1,7 +1,7 @@
 /** The classification supplied by SvelteKit's experimental service-worker API. */
 export interface RemoteRequestClassification {
 	kind: 'data' | 'remote-query' | 'remote-live' | 'remote-mutation' | 'action' | 'other';
-	/** Canonical absolute URL, including the complete query string, or null. */
+	/** Canonical absolute URL, including the complete query string but no fragment, or null. */
 	key: string | null;
 }
 
