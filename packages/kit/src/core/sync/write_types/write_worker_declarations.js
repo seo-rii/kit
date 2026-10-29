@@ -581,6 +581,14 @@ function visit_imports(source, visit) {
 		) {
 			visit(node.moduleSpecifier);
 		} else if (
+			ts.isExternalModule(source) &&
+			ts.isModuleDeclaration(node) &&
+			ts.isStringLiteral(node.name)
+		) {
+			// An augmentation identifies the same module as an import. Relocating only
+			// its imports would silently attach the added types to a different module.
+			visit(node.name);
+		} else if (
 			ts.isImportTypeNode(node) &&
 			ts.isLiteralTypeNode(node.argument) &&
 			ts.isStringLiteralLike(node.argument.literal)
