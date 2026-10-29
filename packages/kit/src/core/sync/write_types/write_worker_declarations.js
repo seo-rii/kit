@@ -210,13 +210,15 @@ export function write_worker_declarations(config, manifest, root) {
 	const isolated = new Set();
 	/** @type {Map<string, string>} */
 	const reasons = new Map();
-	/** @type {Map<string, string>} */
+	/** @type {Map<string, Set<string>>} */
 	const ambient_files = new Map();
 	for (const source of program.getSourceFiles()) {
 		if (source.isDeclarationFile && !ts.isExternalModule(source)) {
 			for (const statement of source.statements) {
 				if (ts.isModuleDeclaration(statement) && ts.isStringLiteral(statement.name)) {
-					ambient_files.set(statement.name.text, path.resolve(source.fileName));
+					const files = ambient_files.get(statement.name.text) ?? new Set();
+					files.add(path.resolve(source.fileName));
+					ambient_files.set(statement.name.text, files);
 				}
 			}
 		}
@@ -255,9 +257,18 @@ export function write_worker_declarations(config, manifest, root) {
 				undefined,
 				program.getModeForUsageLocation(source, literal)
 			).resolvedModule;
-			const dependency = ambient_files.get(literal.text) ?? resolved?.resolvedFileName;
-			if (dependency) imported.add(path.resolve(dependency));
+			const ambient = ambient_files.get(literal.text);
+			if (ambient) {
+				for (const file of ambient) imported.add(file);
+			} else if (resolved) {
+				imported.add(path.resolve(resolved.resolvedFileName));
+			}
 		});
+		// A merged module has one identity. If any declaration needs isolation, all
+		// contributions must move together, including ones without worker references.
+		for (const files of ambient_files.values()) {
+			if (files.has(file)) for (const dependency of files) imported.add(dependency);
+		}
 		references.set(file, imported);
 	}
 	const result = program.emit(
@@ -385,12 +396,14 @@ export function write_worker_declarations(config, manifest, root) {
 	for (const file of declarations.keys()) {
 		if (!isolated.has(file)) declarations.delete(file);
 	}
-	/** @type {Map<string, string>} */
-	const origins = new Map();
+	/** @type {Map<string, Array<{ file: string; text: string }>>} */
+	const ambient_parts = new Map();
 	/** @type {Map<string, string>} */
 	const ambient_declarations = new Map();
 	/** @type {Map<string, import('typescript').ResolutionMode>} */
 	const ambient_formats = new Map();
+	const checker = program.getTypeChecker();
+	let import_id = 0;
 	for (const [file, source] of sources) {
 		if (source.isDeclarationFile && isolated.has(file)) {
 			if (!ts.isExternalModule(source)) {
@@ -416,10 +429,88 @@ export function write_worker_declarations(config, manifest, root) {
 						);
 					}
 					const name = /** @type {import('typescript').StringLiteral} */ (module.name).text;
-					const target = `${file}.ambient-${createHash('sha256').update(name).digest('hex').slice(0, 24)}.d.ts`;
-					const commonjs = module.body.statements.some(
-						(statement) => ts.isExportAssignment(statement) && statement.isExportEquals
+					const target =
+						ambient_declarations.get(name) ??
+						`${file}.ambient-${createHash('sha256').update(name).digest('hex').slice(0, 24)}.d.ts`;
+					const commonjs = [...(ambient_files.get(name) ?? [])].some((file) =>
+						sources
+							.get(file)
+							?.statements.some(
+								(statement) =>
+									ts.isModuleDeclaration(statement) &&
+									ts.isStringLiteral(statement.name) &&
+									statement.name.text === name &&
+									statement.body &&
+									ts.isModuleBlock(statement.body) &&
+									statement.body.statements.some(
+										(statement) => ts.isExportAssignment(statement) && statement.isExportEquals
+									)
+							)
 					);
+					const code = new MagicString(source.text);
+					/** @type {Map<import('typescript').Symbol, string>} */
+					const imports = new Map();
+					/** @param {import('typescript').Node} node */
+					const collect_imports = (node) => {
+						if (
+							(ts.isImportClause(node) ||
+								ts.isImportSpecifier(node) ||
+								ts.isNamespaceImport(node) ||
+								ts.isImportEqualsDeclaration(node)) &&
+							node.name &&
+							!(
+								ts.canHaveModifiers(node) &&
+								ts
+									.getModifiers(node)
+									?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)
+							)
+						) {
+							const symbol = checker.getSymbolAtLocation(node.name);
+							if (symbol) {
+								/** @type {string} */
+								let name;
+								do name = `__worker_import_${import_id++}`;
+								while ([...sources.values()].some((source) => source.text.includes(name)));
+								imports.set(symbol, name);
+							}
+						}
+						ts.forEachChild(node, collect_imports);
+					};
+					collect_imports(module.body);
+					/** @param {import('typescript').Node} node */
+					const rename_imports = (node) => {
+						if (ts.isExportSpecifier(node)) {
+							const symbol = checker.getExportSpecifierLocalTargetSymbol(node);
+							const name = symbol && imports.get(symbol);
+							if (name) {
+								const local = node.propertyName ?? node.name;
+								code.overwrite(
+									local.getStart(source),
+									local.end,
+									node.propertyName ? name : `${name} as ${node.name.text}`
+								);
+								return;
+							}
+						} else if (ts.isIdentifier(node)) {
+							const symbol = checker.getSymbolAtLocation(node);
+							const name = symbol && imports.get(symbol);
+							if (name) {
+								const parent = node.parent;
+								code.overwrite(
+									node.getStart(source),
+									node.end,
+									ts.isImportSpecifier(parent) && parent.name === node && !parent.propertyName
+										? `${node.text} as ${name}`
+										: name
+								);
+								return;
+							}
+						}
+						ts.forEachChild(node, rename_imports);
+					};
+					// Imports are local to each ambient block, even when exported interfaces
+					// merge. Keep those bindings distinct after combining the declarations.
+					rename_imports(module.body);
 					const statements = module.body.statements.map((statement) => {
 						const modifiers = ts.canHaveModifiers(statement)
 							? ts.getModifiers(statement)
@@ -438,16 +529,17 @@ export function write_worker_declarations(config, manifest, root) {
 										  modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.DeclareKeyword)
 										? ''
 										: 'declare ';
-						return prefix + statement.getText(source);
+						return prefix + code.slice(statement.getStart(source), statement.end);
 					});
-					const previous = declarations.get(target);
-					declarations.set(
-						target,
-						previous
-							? previous + '\n' + statements.join('\n')
-							: [...shared, ...statements].join('\n')
-					);
-					origins.set(target, file);
+					const parts = ambient_parts.get(target) ?? [];
+					parts.push({
+						file,
+						text: [...(parts.some((part) => part.file === file) ? [] : shared), ...statements].join(
+							'\n'
+						)
+					});
+					ambient_parts.set(target, parts);
+					declarations.set(target, '');
 					ambient_declarations.set(name, target);
 					ambient_formats.set(target, commonjs ? ts.ModuleKind.CommonJS : ts.ModuleKind.ESNext);
 				}
@@ -475,13 +567,10 @@ export function write_worker_declarations(config, manifest, root) {
 		destinations.set(file, target);
 	}
 
-	/** @type {Set<string>} */
-	const outputs = new Set();
-	for (const [file, text] of declarations) {
-		const target = /** @type {string} */ (destinations.get(file));
-		const original_file = origins.get(file) ?? file;
+	/** @param {string} original_file @param {string} text @param {string} target */
+	function rewrite_declaration(original_file, text, target) {
 		const source = ts.createSourceFile(
-			file.replace(/\.[^.]+$/, '.d.ts'),
+			original_file.replace(/\.[^.]+$/, '.d.ts'),
 			text,
 			ts.ScriptTarget.Latest,
 			true
@@ -500,8 +589,9 @@ export function write_worker_declarations(config, manifest, root) {
 				program.getModeForUsageLocation(source, node)
 			).resolvedModule;
 			const ambient = ambient_declarations.get(node.text);
-			const resolved_file =
-				ambient_files.get(node.text) ?? (resolved && path.resolve(resolved.resolvedFileName));
+			const resolved_file = ambient_files.has(node.text)
+				? undefined
+				: resolved && path.resolve(resolved.resolvedFileName);
 			const resolved_source = resolved_file && sources.get(resolved_file);
 			if (
 				ambient ||
@@ -550,7 +640,17 @@ export function write_worker_declarations(config, manifest, root) {
 		)) {
 			code.remove(match.index, match.index + match[0].length);
 		}
-		const content = code.toString();
+		return code.toString();
+	}
+
+	/** @type {Set<string>} */
+	const outputs = new Set();
+	for (const [file, text] of declarations) {
+		const target = /** @type {string} */ (destinations.get(file));
+		const parts = ambient_parts.get(file) ?? [{ file, text }];
+		const content = parts
+			.map((part) => rewrite_declaration(part.file, part.text, target))
+			.join('\n');
 		if (!fs.existsSync(target) || fs.readFileSync(target, 'utf8') !== content)
 			write(target, content);
 		outputs.add(path.basename(target));
