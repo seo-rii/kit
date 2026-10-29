@@ -145,6 +145,100 @@ function create_worker_request(method, { url = 'https://example.com/target', sig
 	});
 }
 
+test.each(['stream', 'redirect', 'skip', 'error', 'decline', 'cancelled'])(
+	'observes deferred ancestor data before a child finishes with %s',
+	(outcome) => {
+		const manifest = create_manifest({
+			hooks: { client: null, server: null, universal: 'src/hooks.js' }
+		});
+		manifest.nodes.unshift({
+			depth: 0,
+			server: 'src/routes/+layout.server.js',
+			worker: 'src/routes/+layout.worker.js'
+		});
+		manifest.routes[0].page = { layouts: [0], errors: [], leaf: 1 };
+		const source = create_service_worker_resolver(manifest)
+			.replace(
+				/^import \* as (worker_\d+) from ("[^"]+");$/gm,
+				(_, name, file) => `const ${name} = workers[${file}];`
+			)
+			.replace(/^import \* as universal_hooks from "[^"]+";$/m, '');
+		const output = execFileSync(
+			execPath,
+			[
+				'--unhandled-rejections=strict',
+				'--input-type=module',
+				'-e',
+				`
+					import assert from 'node:assert/strict';
+					const outcome = ${JSON.stringify(outcome)};
+					const skipped = ['skip', 'error', 'cancelled'].includes(outcome);
+					const location = new URL('https://example.com/service-worker.js');
+					const fetch = async () => new Response('network');
+					const controller = new AbortController();
+					const reason = new Error('cancelled');
+					class Deferred { constructor(value) { this.value = value; } }
+					const universal_hooks = { transport: { Deferred: {
+						encode: value => value instanceof Deferred && [value.value]
+					} } };
+					let value;
+					const workers = {
+						'/src/routes/+layout.worker.js': { load: () => {
+							value = new Deferred(Promise.reject(new Error('ancestor failure')));
+							return { value, ...(skipped ? { omitted: new Promise(() => {}) } : {}) };
+						} },
+						'/src/routes/target/+page.worker.js': outcome === 'decline' ? {} : {
+							load: async ({ parent }) => {
+								assert.equal((await parent()).value, value);
+								if (outcome === 'redirect') throw { status: 307, location: '/login' };
+								await new Promise(setImmediate);
+								if (outcome === 'error') throw new Error('page failure');
+								if (outcome === 'cancelled') { controller.abort(reason); throw reason; }
+								return { ready: true };
+							}
+						}
+					};
+					${source}
+					const request = new Request('https://example.com/target/__data.json' +
+						(skipped ? '?x-sveltekit-invalidated=01' : ''), { signal: controller.signal });
+					const pending = resolve(request, { strategy: 'worker-first' });
+					if (outcome === 'cancelled') {
+						await assert.rejects(pending, error => error === reason);
+						process.stdout.write('cancelled');
+					} else {
+						process.stdout.write(await (await pending).text());
+					}
+					await new Promise(setImmediate);
+				`
+			],
+			{ encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10000 }
+		);
+		if (outcome === 'cancelled' || outcome === 'decline') {
+			expect(output).toBe(outcome === 'cancelled' ? 'cancelled' : 'network');
+			return;
+		}
+		const result = output
+			.trim()
+			.split('\n')
+			.map((line) => JSON.parse(line));
+		if (outcome === 'redirect') {
+			expect(result).toEqual([{ type: 'redirect', status: 307, location: '/login' }]);
+		} else if (outcome === 'stream') {
+			expect(result).toHaveLength(2);
+			expect(result[1]).toMatchObject({ type: 'chunk', id: 1 });
+			expect(devalue.unflatten(result[1].error)).toEqual({
+				status: 500,
+				message: 'ancestor failure'
+			});
+		} else {
+			expect(result).toHaveLength(1);
+			expect(result[0].nodes[0]).toEqual({ type: 'skip' });
+			if (outcome === 'error') expect(result[0].nodes[1].type).toBe('error');
+			else expect(devalue.unflatten(result[0].nodes[1].data)).toEqual({ ready: true });
+		}
+	}
+);
+
 for (const strategy of ['worker-first', 'network-first']) {
 	test.each(['GET', 'POST'])(
 		`rejects an already aborted %s request without invoking workers (${strategy})`,
@@ -267,8 +361,8 @@ for (const throws of [false, true]) {
 	);
 }
 
-test.each(['layout', 'page'])(
-	'observes completed layout promises when the request is canceled in the %s load',
+test.each(['layout', 'page', 'serialization'])(
+	'observes completed layout promises and preserves cancellation during %s',
 	(stage) => {
 		const manifest = create_manifest();
 		manifest.nodes.unshift({
@@ -298,8 +392,11 @@ test.each(['layout', 'page'])(
 					const workers = {
 						'/src/routes/+layout.worker.js': {
 							load() {
-								if (stage === 'layout') controller.abort(reason);
-								return { later: Promise.reject(new Error('discarded layout promise')) };
+								if (stage !== 'page') controller.abort(reason);
+								return {
+									later: Promise.reject(new Error('discarded layout promise')),
+									...(stage === 'serialization' ? { invalid: () => {} } : {})
+								};
 							}
 						},
 						'/src/routes/target/+page.worker.js': {
@@ -317,7 +414,7 @@ test.each(['layout', 'page'])(
 						}), { strategy: 'worker-first' }),
 						(error) => error === reason
 					);
-					assert.equal(page_calls, stage === 'layout' ? 0 : 1);
+					assert.equal(page_calls, stage === 'page' ? 1 : 0);
 					await new Promise(setImmediate);
 				`
 			],

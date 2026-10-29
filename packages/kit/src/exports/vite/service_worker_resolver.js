@@ -171,32 +171,23 @@ export function create_service_worker_resolver(manifest_data, options = {}) {
 				route_match.route.nodes.length
 			);
 
-			const nodes = [];
-			const throw_if_aborted = () => {
-				if (!request.signal.aborted) return;
-				try {
-					// Observe deferred data from completed loads before discarding the response.
-					render_data_response(nodes);
-				} finally {
-					request.signal.throwIfAborted();
-				}
-			};
+			const serializer = create_data_serializer();
 			const parent_data = {};
 			const should_load = get_required_workers(route_match.route.nodes, invalidated);
 			let handled = false;
 
 			for (let i = 0; i < route_match.route.nodes.length; i += 1) {
-				throw_if_aborted();
+				request.signal.throwIfAborted();
 				const node = route_match.route.nodes[i];
 
 				if (!should_load[i]) {
-					nodes[i] = { type: 'skip' };
+					serializer.add_node(i, { type: 'skip' });
 					continue;
 				}
 
 				if (!node?.worker?.load) {
 					if (invalidated[i] && node?.server) return null;
-					nodes[i] = invalidated[i] ? null : { type: 'skip' };
+					serializer.add_node(i, invalidated[i] ? null : { type: 'skip' });
 					continue;
 				}
 
@@ -217,29 +208,37 @@ export function create_service_worker_resolver(manifest_data, options = {}) {
 						server: (options) => fetch_with_options(request, options)
 					});
 				} catch (error) {
-					throw_if_aborted();
+					request.signal.throwIfAborted();
 					if (is_redirect(error)) return redirect_response(error);
 
-					nodes[i] = {
+					serializer.add_node(i, {
 						type: 'error',
 						error: serialize_error(error)
-					};
+					});
 					for (let j = i + 1; j < route_match.route.nodes.length; j += 1) {
-						nodes[j] = { type: 'skip' };
+						serializer.add_node(j, { type: 'skip' });
 					}
 
-					return data_response(nodes);
+					return data_response(serializer);
 				}
 
-				if (!invalidated[i]) {
-					nodes[i] = { type: 'skip' };
-				} else {
-					nodes[i] = {
-						type: 'data',
-						data,
-						slash: node.slash,
-						uses: serialize_uses(uses)
-					};
+				const result = {
+					type: 'data',
+					data,
+					slash: node.slash,
+					uses: serialize_uses(uses)
+				};
+				// Observe deferred values before waiting for the next load or discarding the
+				// response. Omitted ancestor data must not add chunks to the client stream.
+				try {
+					if (!invalidated[i]) {
+						create_data_serializer().add_node(0, result);
+						serializer.add_node(i, { type: 'skip' });
+					} else {
+						serializer.add_node(i, result);
+					}
+				} finally {
+					request.signal.throwIfAborted();
 				}
 
 				if (data && typeof data === 'object') {
@@ -249,7 +248,7 @@ export function create_service_worker_resolver(manifest_data, options = {}) {
 
 			if (!handled) return null;
 
-			return data_response(nodes);
+			return data_response(serializer);
 		}
 
 		async function resolve_worker_action(request) {
@@ -473,8 +472,8 @@ export function create_service_worker_resolver(manifest_data, options = {}) {
 			return tracked;
 		}
 
-		function data_response(nodes) {
-			const { data, chunks } = render_data_response(nodes);
+		function data_response(serializer) {
+			const { data, chunks } = serializer.get_data();
 
 			if (!chunks) {
 				return response(data, {
@@ -516,7 +515,7 @@ export function create_service_worker_resolver(manifest_data, options = {}) {
 			);
 		}
 
-		function render_data_response(nodes) {
+		function create_data_serializer() {
 			let promise_id = 1;
 			const iterator = create_async_iterator();
 
@@ -557,28 +556,21 @@ export function create_service_worker_resolver(manifest_data, options = {}) {
 				}
 			};
 
-			const data =
-				'{"type":"data","nodes":[' +
-				nodes
-					.map((node) => {
-						if (!node || node.type === 'skip' || node.type === 'error') {
-							return JSON.stringify(node);
-						}
-						return (
-							'{"type":"data","data":' +
-							devalue.stringify(node.data, reducers) +
-							',"uses":' +
-							JSON.stringify(node.uses) +
-							(node.slash ? ',"slash":' + JSON.stringify(node.slash) : '') +
-							'}'
-						);
-					})
-					.join(',') +
-				']}\\n';
-
+			const strings = [];
 			return {
-				data,
-				chunks: promise_id > 1 ? iterator.iterate() : null
+				add_node(i, node) {
+					strings[i] = !node || node.type === 'skip' || node.type === 'error'
+						? JSON.stringify(node)
+						: '{"type":"data","data":' + devalue.stringify(node.data, reducers) +
+							',"uses":' + JSON.stringify(node.uses) +
+							(node.slash ? ',"slash":' + JSON.stringify(node.slash) : '') + '}';
+				},
+				get_data() {
+					return {
+						data: '{"type":"data","nodes":[' + strings.join(',') + ']}\\n',
+						chunks: promise_id > 1 ? iterator.iterate() : null
+					};
+				}
 			};
 		}
 
