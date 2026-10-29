@@ -760,6 +760,84 @@ test('adds the deployment version to worker data responses', async () => {
 	expect(response.headers.get('x-sveltekit-version')).toBe('test-version');
 });
 
+test.each([
+	{ encoded: 'a%5Cb', decoded: 'a\\b' },
+	{ encoded: 'a%09b', decoded: 'a\tb' },
+	{ encoded: 'a%0Ab', decoded: 'a\nb' },
+	{ encoded: 'a%0Db', decoded: 'a\rb' },
+	{ encoded: 'a%41b', decoded: 'aAb' },
+	{ encoded: 'a%5Bb', decoded: 'a[b' },
+	{ encoded: 'a%25b', decoded: 'a%b' },
+	{ encoded: 'a%252Fb', decoded: 'a%2Fb' },
+	{ encoded: 'a%2Fb', decoded: 'a/b' },
+	{ encoded: '%C3%A9', decoded: 'é' }
+])(
+	'preserves encoded data URL $encoded while decoding route params',
+	async ({ encoded, decoded }) => {
+		const route_id = '/target/[slug]';
+		const manifest = create_manifest({ route_id, ...parse_route_id(route_id) });
+		for (const base of ['', '/app']) {
+			const fetch = vi.fn();
+			const { resolve } = instantiate_resolver(manifest, {
+				base,
+				fetch,
+				workers: {
+					'/src/routes/target/+page.worker.js': {
+						/** @param {{ params: Record<string, string>; url: URL }} event */
+						load: ({ params, url }) => ({ slug: params.slug, pathname: url.pathname })
+					}
+				}
+			});
+			const pathname = `${base}/target/${encoded}`;
+			const response = await resolve(new Request(`https://example.com${pathname}/__data.json`), {
+				strategy: 'worker-first'
+			});
+			const body = await response.json();
+			expect(devalue.unflatten(body.nodes[0].data)).toEqual({ slug: decoded, pathname });
+			expect(fetch).not.toHaveBeenCalled();
+		}
+	}
+);
+
+test('preserves encoded URL input to reroute and decodes its result for typed matchers', async () => {
+	const route_id = '/target/[slug=encoded]';
+	const manifest = create_manifest({
+		route_id,
+		...parse_route_id(route_id),
+		hooks: { client: null, server: null, universal: 'src/hooks.js' },
+		params_file: 'src/params.js'
+	});
+	const reroute = vi.fn((/** @type {{ url: URL }} */ { url }) => {
+		expect(url.pathname).toBe('/app/translated/a%5Cb');
+		return '/app/target/a%5Cb';
+	});
+	const validate = vi.fn((/** @type {unknown} */ value) => ({
+		value: String(value).toUpperCase()
+	}));
+	const { resolve } = instantiate_resolver(manifest, {
+		base: '/app',
+		hooks: { reroute },
+		matchers: { encoded: { '~standard': { version: 1, vendor: 'test', validate } } },
+		workers: {
+			'/src/routes/target/+page.worker.js': {
+				/** @param {{ params: Record<string, unknown>; url: URL }} event */
+				load: ({ params, url }) => ({ slug: params.slug, pathname: url.pathname })
+			}
+		}
+	});
+	const response = await resolve(
+		new Request('https://example.com/app/translated/a%5Cb/__data.json'),
+		{ strategy: 'worker-first' }
+	);
+	const body = await response.json();
+	expect(devalue.unflatten(body.nodes[0].data)).toEqual({
+		slug: 'A\\B',
+		pathname: '/app/translated/a%5Cb'
+	});
+	expect(reroute).toHaveBeenCalledOnce();
+	expect(validate).toHaveBeenCalledExactlyOnceWith('a\\b');
+});
+
 test('applies reroute before matching and normalizing the worker load URL', async () => {
 	/** @type {URL | undefined} */
 	let reroute_url;

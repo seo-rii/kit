@@ -141,7 +141,9 @@ export function create_service_worker_resolver(manifest_data, options = {}) {
 			if (request.method !== 'GET') return null;
 
 			const request_url = new URL(request.url);
-			const pathname = decode_pathname(strip_base(request_url.pathname));
+			// Decode only for route matching. Reassigning a decoded URL pathname would
+			// normalize encoded backslashes and control characters before hooks or loads run.
+			const pathname = strip_base(request_url.pathname);
 			let page_pathname = remove_data_suffix(pathname);
 			if (!page_pathname) return null;
 			if (
