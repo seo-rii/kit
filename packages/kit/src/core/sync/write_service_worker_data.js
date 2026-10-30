@@ -3,6 +3,7 @@ import path from 'node:path';
 import { runtime_directory } from '../utils.js';
 import { posixify } from '../../utils/os.js';
 import { s } from '../../utils/misc.js';
+import { get_page_options } from '../../exports/vite/static_analysis/index.js';
 import { write_if_changed } from './utils.js';
 
 /**
@@ -27,6 +28,15 @@ export function write_service_worker_data(config, manifest, output, root) {
 		if (route.layout) owners.set(route.layout, { id: route.id, kind: 'layout' });
 		if (route.leaf) owners.set(route.leaf, { id: route.id, kind: 'page' });
 	}
+	/** @type {Map<PageNode, boolean>} */
+	const server_loads = new Map();
+	for (const node of manifest.nodes) {
+		if (!node.server) continue;
+		// Inherited and universal options can contain another module's load export.
+		// Only this server module determines whether parent() needs a replacement.
+		const options = get_page_options(node.server, root);
+		server_loads.set(node, options === null || Object.hasOwn(options, 'load'));
+	}
 	const routes = manifest.routes
 		.filter((route) => route.page || route.endpoint)
 		.map((route) => {
@@ -42,7 +52,7 @@ export function write_service_worker_data(config, manifest, output, root) {
 				const node = manifest.nodes[index];
 				return {
 					...owners.get(node),
-					server: !!node.server,
+					server: server_loads.get(node) ?? false,
 					slash: node.page_options?.trailingSlash
 				};
 			});

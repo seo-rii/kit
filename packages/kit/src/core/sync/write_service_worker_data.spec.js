@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
 import { afterEach, expect, test, vi } from 'vitest';
+import * as devalue from 'devalue';
 import { create_data_resolver } from '../../runtime/app/service-worker/data.js';
 import { process_config, validate_config } from '../config/index.js';
 import { runtime_directory } from '../utils.js';
@@ -170,6 +171,82 @@ test('retains ownership of the implicit root layout and distinguishes universal 
 	]);
 	expect(resolver[1]).toEqual({});
 	expect(resolver[2]).toEqual({});
+});
+
+test.each(['001', '111'])(
+	'parent skips option-only server layouts for invalidation mask %s',
+	async (invalidated) => {
+		const setup = fixture({
+			'src/routes/+layout.server.js': 'export const load = () => ({ root: "server" });',
+			'src/routes/items/+layout.server.js': 'export const trailingSlash = "always";',
+			'src/routes/items/+layout.js': 'export const load = () => ({ universal: true });',
+			'src/routes/items/+page.svelte': '',
+			'src/routes/items/+page.server.js': 'export const load = () => ({ source: "server" });'
+		});
+		const { resolver } = evaluate(generate(setup));
+		const resolve = create_data_resolver(...resolver);
+		const response = await resolve(
+			new Request(`${origin}/app/items/__data.json?x-sveltekit-invalidated=${invalidated}`),
+			{
+				'/': { layout: () => ({ root: 'local' }) },
+				'/items': {
+					page: async ({ parent, url }) => ({ ...(await parent()), pathname: url.pathname })
+				}
+			}
+		);
+		expect(response?.status).toBe(200);
+		const result = await response?.json();
+		expect(devalue.unflatten(result.nodes[2].data)).toEqual({
+			root: 'local',
+			pathname: '/app/items/'
+		});
+		expect(result.nodes[2].uses.parent).toBe(1);
+		if (invalidated === '001') {
+			expect(result.nodes.slice(0, 2)).toEqual([{ type: 'skip' }, { type: 'skip' }]);
+		}
+	}
+);
+
+test('parent still requires a replacement for an actual server layout load', async () => {
+	const { resolver } = evaluate(
+		generate(
+			fixture({
+				'src/routes/+layout.server.js': 'export const load = () => ({ required: true });',
+				'src/routes/items/+page.svelte': '',
+				'src/routes/items/+page.server.js': 'export const load = () => ({});'
+			})
+		)
+	);
+	const resolve = create_data_resolver(...resolver);
+	await expect(
+		resolve(new Request(`${origin}/app/items/__data.json?x-sveltekit-invalidated=01`), {
+			'/items': { page: async ({ parent }) => ({ ...(await parent()) }) }
+		})
+	).resolves.toBeNull();
+});
+
+test('sends slash-only layout metadata when only an ancestor has a fallback load', async () => {
+	const { resolver } = evaluate(
+		generate(
+			fixture({
+				'src/routes/+layout.server.js': 'export const load = () => ({ root: "server" });',
+				'src/routes/items/+layout.server.js': 'export const trailingSlash = "always";',
+				'src/routes/items/+page.svelte': ''
+			})
+		)
+	);
+	const resolve = create_data_resolver(...resolver);
+	// The client requests nodes exporting trailingSlash even when they have no load.
+	const response = await resolve(
+		new Request(`${origin}/app/items/__data.json?x-sveltekit-invalidated=110`),
+		{ '/': { layout: () => ({ root: 'local' }) } }
+	);
+	expect(response?.status).toBe(200);
+	const result = await response?.json();
+	expect(devalue.unflatten(result.nodes[0].data)).toEqual({ root: 'local' });
+	expect(result.nodes[1]).toMatchObject({ type: 'data', uses: {}, slash: 'always' });
+	expect(devalue.unflatten(result.nodes[1].data)).toBeNull();
+	expect(result.nodes[2]).toEqual({ type: 'skip' });
 });
 
 test('does not route endpoint data requests to a lower-precedence dynamic page fallback', async () => {

@@ -190,6 +190,22 @@ export function create_data_resolver(routes, hooks, matchers, options) {
 							node = { type: 'error', error: serialize_error(error) };
 							failed = true;
 						}
+					} else if (route.nodes[i]?.slash) {
+						// A server module can export trailingSlash without a load. Its empty
+						// data node still carries the URL policy used by client navigation.
+						node = {
+							type: 'data',
+							data: null,
+							uses: {
+								dependencies: new Set(),
+								params: new Set(),
+								parent: false,
+								route: false,
+								url: false,
+								search_params: new Set()
+							},
+							slash: route.nodes[i]?.slash
+						};
 					}
 					// Attach deferred rejection handlers before waiting for another load, including
 					// when a later load redirects or makes the fallback decline the request.
