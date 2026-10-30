@@ -693,7 +693,36 @@ test('server retries preserve the original request and combine caller cancellati
 		})
 	);
 	expect(devalue.unflatten(result.nodes[0].data)).toEqual({ message: 'retry cancelled' });
-	expect(fetch).toHaveBeenCalledExactlyOnceWith(original, { signal: expect.any(AbortSignal) });
+	expect(fetch).toHaveBeenCalledExactlyOnceWith(original, {
+		signal: expect.any(AbortSignal),
+		referrer: original.referrer,
+		referrerPolicy: original.referrerPolicy
+	});
+});
+
+test.each([
+	{ referrer: `${origin}/source`, referrerPolicy: 'strict-origin-when-cross-origin' },
+	{ referrer: '', referrerPolicy: 'no-referrer' },
+	{ referrer: `${origin}/`, referrerPolicy: 'origin' },
+	{ referrer: 'about:client', referrerPolicy: '' }
+])('server retries preserve referrer settings %j', async (options) => {
+	vi.stubGlobal('fetch', (/** @type {Request} */ input, /** @type {RequestInit} */ init) => {
+		const forwarded = new Request(input, init);
+		return Promise.resolve(
+			Response.json({ referrer: forwarded.referrer, referrerPolicy: forwarded.referrerPolicy })
+		);
+	});
+	const original = new Request(request('/items'), {
+		...options,
+		referrerPolicy: /** @type {ReferrerPolicy} */ (options.referrerPolicy)
+	});
+	const resolve = resolver([route('/items')]);
+	const [result] = await read(
+		await resolve(original, {
+			'/items': { page: async ({ server }) => (await server()).json() }
+		})
+	);
+	expect(devalue.unflatten(result.nodes[0].data)).toEqual(options);
 });
 
 test.each(['request', 'caller'])(

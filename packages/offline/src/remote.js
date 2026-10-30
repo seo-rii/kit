@@ -79,7 +79,12 @@ export function createRemoteCache({
 		}
 
 		// HTTP cache entries cannot be invalidated alongside this coordinator's namespace.
-		const network_request = new Request(request, { cache: 'no-store' });
+		const network_request = new Request(request, {
+			cache: 'no-store',
+			// Supplying RequestInit otherwise replaces these with the worker's defaults.
+			referrer: request.referrer,
+			referrerPolicy: request.referrerPolicy
+		});
 		if (active_mutations > 0) return fetch(network_request);
 
 		const request_generation = generation;

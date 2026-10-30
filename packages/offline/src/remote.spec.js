@@ -328,6 +328,25 @@ test('bypasses the browser HTTP cache while preserving query headers and abort l
 	expect(received.signal.aborted).toBe(true);
 });
 
+test.each(
+	/** @type {RequestInit[]} */ ([
+		{ referrer: 'https://example.com/account', referrerPolicy: 'strict-origin-when-cross-origin' },
+		{ referrer: 'https://example.com/custom', referrerPolicy: 'same-origin' },
+		{ referrer: '', referrerPolicy: 'no-referrer' },
+		{ referrer: 'about:client', referrerPolicy: 'origin' }
+	])
+)('preserves the query referrer and policy while bypassing HTTP cache: %j', async (init) => {
+	const { storage } = memory_storage();
+	const fetch = vi.fn().mockResolvedValue(cacheable());
+	const { handle } = create(fetch, storage);
+	const request = new Request(query_url, init);
+	await handle(request);
+	const received = fetch.mock.calls[0][0];
+	expect(received.referrer).toBe(request.referrer);
+	expect(received.referrerPolicy).toBe(request.referrerPolicy);
+	expect(received.cache).toBe('no-store');
+});
+
 describe('explicit cache opt-in', () => {
 	test.each(
 		/** @type {Record<string, string>[]} */ ([

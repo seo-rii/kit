@@ -277,7 +277,12 @@ async function retry_request(request, options = {}) {
 					options.timeout
 				);
 	try {
-		return await fetch(request, { signal });
+		// Providing init resets these fields to the worker's defaults unless kept explicitly.
+		return await fetch(request, {
+			signal,
+			referrer: request.referrer,
+			referrerPolicy: request.referrerPolicy
+		});
 	} finally {
 		// The timeout bounds the wait for response headers; caller cancellation also covers the body.
 		if (timer !== null) clearTimeout(timer);
