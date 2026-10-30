@@ -223,6 +223,33 @@ export function write_worker_declarations(config, manifest, root) {
 			}
 		}
 	}
+	/** @param {string} name @param {import('typescript').ResolvedModuleFull | undefined} resolved */
+	const resolve_ambient_module = (name, resolved) => {
+		if (ambient_files.has(name)) return name;
+		// Exact ambient names precede file resolution, while patterns are its fallback.
+		if (resolved && program.getSourceFile(resolved.resolvedFileName)) return;
+		let longest_prefix = -1;
+		/** @type {string | undefined} */
+		let match;
+		for (const pattern of ambient_files.keys()) {
+			const index = pattern.indexOf('*');
+			if (index <= longest_prefix || pattern.indexOf('*', index + 1) !== -1) continue;
+			const prefix = pattern.slice(0, index);
+			const suffix = pattern.slice(index + 1);
+			if (
+				name.length >= prefix.length + suffix.length &&
+				name.startsWith(prefix) &&
+				name.endsWith(suffix)
+			) {
+				// Like TypeScript, keep the first match when prefixes have equal length.
+				longest_prefix = index;
+				match = pattern;
+			}
+		}
+		return match;
+	};
+	/** @type {Set<string>} */
+	const augmented_patterns = new Set();
 	for (const source of program.getSourceFiles()) {
 		if (program.isSourceFileDefaultLibrary(source)) continue;
 		const file = path.resolve(source.fileName);
@@ -257,7 +284,11 @@ export function write_worker_declarations(config, manifest, root) {
 				undefined,
 				program.getModeForUsageLocation(source, literal)
 			).resolvedModule;
-			const ambient = ambient_files.get(literal.text);
+			const name = resolve_ambient_module(literal.text, resolved);
+			const ambient = name && ambient_files.get(name);
+			if (name?.includes('*') && ts.isModuleDeclaration(literal.parent)) {
+				augmented_patterns.add(name);
+			}
 			if (ambient) {
 				for (const file of ambient) imported.add(file);
 			} else if (resolved) {
@@ -402,6 +433,10 @@ export function write_worker_declarations(config, manifest, root) {
 	const ambient_declarations = new Map();
 	/** @type {Map<string, import('typescript').ResolutionMode>} */
 	const ambient_formats = new Map();
+	/** @type {Map<string, string>} */
+	const pattern_prefixes = new Map();
+	/** @type {Set<string>} */
+	const pattern_files = new Set();
 	const checker = program.getTypeChecker();
 	let import_id = 0;
 	for (const [file, source] of sources) {
@@ -432,6 +467,15 @@ export function write_worker_declarations(config, manifest, root) {
 					const target =
 						ambient_declarations.get(name) ??
 						`${file}.ambient-${createHash('sha256').update(name).digest('hex').slice(0, 24)}.d.ts`;
+					const pattern = augmented_patterns.has(name);
+					const prefix = `sveltekit:worker:${path.basename(worker_declaration(config, target, root), '.d.ts')}:`;
+					if (pattern) {
+						// A shared file would spread a concrete augmentation to all matches;
+						// copying each match would split private classes and unique symbols.
+						// Preserve the pattern so TypeScript keeps both identities intact.
+						pattern_prefixes.set(name, prefix);
+						pattern_files.add(target);
+					}
 					const commonjs = [...(ambient_files.get(name) ?? [])].some((file) =>
 						sources
 							.get(file)
@@ -512,6 +556,7 @@ export function write_worker_declarations(config, manifest, root) {
 					// merge. Keep those bindings distinct after combining the declarations.
 					rename_imports(module.body);
 					const statements = module.body.statements.map((statement) => {
+						if (pattern) return code.slice(statement.getStart(source), statement.end);
 						const modifiers = ts.canHaveModifiers(statement)
 							? ts.getModifiers(statement)
 							: undefined;
@@ -532,11 +577,17 @@ export function write_worker_declarations(config, manifest, root) {
 						return prefix + code.slice(statement.getStart(source), statement.end);
 					});
 					const parts = ambient_parts.get(target) ?? [];
+					const first_part = !parts.some((part) => part.file === file);
 					parts.push({
 						file,
-						text: [...(parts.some((part) => part.file === file) ? [] : shared), ...statements].join(
-							'\n'
-						)
+						text: pattern
+							? [
+									`declare module ${JSON.stringify(prefix + name)} {`,
+									...(first_part ? shared.map((text) => text.replace(/^declare\s+/, '')) : []),
+									...statements,
+									'}'
+								].join('\n')
+							: [...(first_part ? shared : []), ...statements].join('\n')
 					});
 					ambient_parts.set(target, parts);
 					declarations.set(target, '');
@@ -566,6 +617,11 @@ export function write_worker_declarations(config, manifest, root) {
 		}
 		destinations.set(file, target);
 	}
+	/** @type {Map<string, Set<string>>} */
+	const pattern_references = new Map();
+	/** @type {Map<string, string>} */
+	const aliases = new Map();
+	const pattern_destinations = new Set([...pattern_files].map((file) => destinations.get(file)));
 
 	/** @param {string} original_file @param {string} text @param {string} target */
 	function rewrite_declaration(original_file, text, target) {
@@ -588,10 +644,22 @@ export function write_worker_declarations(config, manifest, root) {
 				undefined,
 				program.getModeForUsageLocation(source, node)
 			).resolvedModule;
-			const ambient = ambient_declarations.get(node.text);
-			const resolved_file = ambient_files.has(node.text)
-				? undefined
-				: resolved && path.resolve(resolved.resolvedFileName);
+			const name = resolve_ambient_module(node.text, resolved);
+			const ambient = name && ambient_declarations.get(name);
+			const prefix = name && pattern_prefixes.get(name);
+			if (ambient && prefix) {
+				const destination = /** @type {string} */ (destinations.get(ambient));
+				if (destination !== target) {
+					const headers = pattern_references.get(target) ?? new Set();
+					headers.add(
+						`/// <reference path=${JSON.stringify('./' + posixify(path.relative(path.dirname(target), destination)))} />`
+					);
+					pattern_references.set(target, headers);
+				}
+				code.overwrite(node.getStart(source), node.end, JSON.stringify(prefix + node.text));
+				return;
+			}
+			const resolved_file = name ? undefined : resolved && path.resolve(resolved.resolvedFileName);
 			const resolved_source = resolved_file && sources.get(resolved_file);
 			if (
 				ambient ||
@@ -603,6 +671,14 @@ export function write_worker_declarations(config, manifest, root) {
 				const destination = /** @type {string} */ (
 					destinations.get(ambient ?? resolved_file ?? '') ?? resolved_file
 				);
+				if (pattern_destinations.has(target)) {
+					// Ambient module bodies cannot import relative paths. A types-only
+					// package alias resolves to the same file without duplicating its symbols.
+					const alias = `__sveltekit_worker_${createHash('sha256').update(destination).digest('hex').slice(0, 24)}`;
+					aliases.set(alias, destination);
+					code.overwrite(node.getStart(source), node.end, JSON.stringify(alias));
+					return;
+				}
 				const relative = posixify(path.relative(path.dirname(target), destination)).replace(
 					/\.d\.([cm]?)ts$/,
 					'.$1js'
@@ -648,15 +724,28 @@ export function write_worker_declarations(config, manifest, root) {
 	for (const [file, text] of declarations) {
 		const target = /** @type {string} */ (destinations.get(file));
 		const parts = ambient_parts.get(file) ?? [{ file, text }];
-		const content = parts
-			.map((part) => rewrite_declaration(part.file, part.text, target))
-			.join('\n');
+		const rewritten = parts.map((part) => rewrite_declaration(part.file, part.text, target));
+		const content = [...(pattern_references.get(target) ?? []), ...rewritten].join('\n');
 		if (!fs.existsSync(target) || fs.readFileSync(target, 'utf8') !== content)
 			write(target, content);
 		outputs.add(path.basename(target));
 	}
+	if (aliases.size) {
+		const packages = path.join(directory, 'node_modules');
+		for (const [name, destination] of aliases) {
+			const target = path.join(packages, name);
+			const file = path.join(target, 'package.json');
+			const content = JSON.stringify({ types: posixify(path.relative(target, destination)) });
+			if (!fs.existsSync(file) || fs.readFileSync(file, 'utf8') !== content) write(file, content);
+		}
+		for (const file of fs.readdirSync(packages)) {
+			if (!aliases.has(file))
+				fs.rmSync(path.join(packages, file), { recursive: true, force: true });
+		}
+		outputs.add('node_modules');
+	}
 	for (const file of fs.readdirSync(directory)) {
-		if (!outputs.has(file)) fs.rmSync(path.join(directory, file), { force: true });
+		if (!outputs.has(file)) fs.rmSync(path.join(directory, file), { recursive: true, force: true });
 	}
 	// Retain deleted dependencies so recreating one also refreshes the snapshots.
 	dependencies.set(root, new Set([...(dependencies.get(root) ?? []), ...inputs]));

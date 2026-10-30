@@ -8,6 +8,265 @@ import { ts } from '../ts.js';
 import { worker_declaration, write_worker_declarations } from './write_worker_declarations.js';
 
 test(
+	'keeps wildcard augmentations separate while preserving shared brands',
+	{ timeout: 60000 },
+	() => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kit-worker-wildcard-augmentations-'));
+		const write = (/** @type {string} */ name, /** @type {string} */ content) => {
+			const file = path.join(root, name);
+			fs.mkdirSync(path.dirname(file), { recursive: true });
+			fs.writeFileSync(file, content);
+			return file;
+		};
+		try {
+			const config = validate_config({ kit: { experimental: { serviceWorkerFallbacks: true } } });
+			config.kit.files.routes = path.join(root, 'src/routes');
+			config.kit.outDir = path.join(root, '.svelte-kit');
+			write('package.json', JSON.stringify({ type: 'module' }));
+			write(
+				'.svelte-kit/tsconfig.worker.json',
+				JSON.stringify({
+					compilerOptions: { module: 'NodeNext', moduleResolution: 'NodeNext', types: [] }
+				})
+			);
+			write(
+				'node_modules/worker-contract/package.json',
+				JSON.stringify({ name: 'worker-contract', type: 'module', types: 'index.d.ts' })
+			);
+			const contract = write(
+				'node_modules/worker-contract/index.d.ts',
+				`/// <reference lib="webworker" />
+			declare module '*.worker-data' {
+				import type { Shared } from 'worker-model';
+				export interface Data { kind: 'base'; shared: Shared; }
+				export class Model { private brand: unknown; }
+				export const token: unique symbol;
+				export type Token = typeof token;
+			}
+			declare module 'worker-contract' {
+				import type * as First from 'one.worker-data';
+				import type * as Second from 'two.worker-data';
+				export interface Payload {
+					first: First.Data; second: Second.Data;
+					first_model: First.Model; second_model: Second.Model;
+					first_token: First.Token; second_token: Second.Token;
+				}
+			}`
+			);
+			write(
+				'node_modules/worker-contract/node_modules/worker-model/package.json',
+				JSON.stringify({ name: 'worker-model', type: 'module', types: 'index.d.mts' })
+			);
+			const shared = write(
+				'node_modules/worker-contract/node_modules/worker-model/index.d.mts',
+				`export declare class Shared { private brand: unknown; }`
+			);
+			const augmentation = write(
+				'src/augmentation.d.ts',
+				`import 'one.worker-data';
+			declare module 'one.worker-data' { interface Data { extra: 'one'; } }`
+			);
+			write('src/routes/+page.svelte', '<p>worker</p>');
+			const assertions = `
+			const first: 'one' = data.first.extra;
+			// @ts-expect-error the second concrete module is not augmented
+			data.second.extra;
+			const first_model: typeof data.first_model = data.second_model;
+			const second_model: typeof data.second_model = data.first_model;
+			const first_token: typeof data.first_token = data.second_token;
+			const second_token: typeof data.second_token = data.first_token;`;
+			const worker = write(
+				'src/routes/+page.worker.ts',
+				`import type { Payload } from 'worker-contract';
+			import '../augmentation.js';
+			export const load = (): Payload => ({
+				first: { kind: 'base', shared: null!, extra: 'one' }, second: { kind: 'base', shared: null! },
+				first_model: null!, second_model: null!, first_token: null!, second_token: null!
+			});
+			declare const data: Payload;
+			${assertions}`
+			);
+			/** @type {import('typescript').CompilerOptions} */
+			const options = {
+				module: ts.ModuleKind.NodeNext,
+				moduleResolution: ts.ModuleResolutionKind.NodeNext,
+				target: ts.ScriptTarget.ESNext,
+				types: [],
+				strict: true,
+				skipLibCheck: false,
+				noEmit: true
+			};
+			/** @param {import('typescript').Program} program */
+			const diagnostics = (program) =>
+				ts.getPreEmitDiagnostics(program).map((diagnostic) => ({
+					code: diagnostic.code,
+					message: ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')
+				}));
+			expect(
+				diagnostics(
+					ts.createProgram([worker], { ...options, lib: ['lib.esnext.d.ts', 'lib.webworker.d.ts'] })
+				)
+			).toEqual([]);
+			fs.mkdirSync(path.join(config.kit.outDir, 'types'), { recursive: true });
+			write_worker_declarations(config, create_manifest_data({ config, cwd: root }), root);
+			const relative = path
+				.relative(root, worker_declaration(config, worker, root))
+				.split(path.sep)
+				.join('/')
+				.replace(/\.d\.ts$/, '.js');
+			const app_pattern = write(
+				'app-pattern.d.ts',
+				`declare module '*.worker-data' { export interface Data { kind: 'app'; } }`
+			);
+			const app = write(
+				'app.ts',
+				`import type { load } from './${relative}';
+			import type { Shared } from './node_modules/worker-contract/node_modules/worker-model/index.mjs';
+			import type { Data as AppData } from 'one.worker-data';
+			declare const app: AppData;
+			const app_kind: 'app' = app.kind;
+			// @ts-expect-error worker augmentations must not affect application modules
+			app.extra;
+			declare const data: ReturnType<typeof load>;
+			${assertions}
+			const shared_first: Shared = data.first.shared;
+			const shared_second: Shared = data.second.shared;
+			// @ts-expect-error isolated declarations must not expose worker globals
+			importScripts('worker.js');`
+			);
+			const program = ts.createProgram([app, app_pattern], {
+				...options,
+				lib: ['lib.esnext.d.ts', 'lib.dom.d.ts']
+			});
+			expect(diagnostics(program)).toEqual([]);
+			for (const file of [worker, contract, augmentation])
+				expect(program.getSourceFile(file)).toBeUndefined();
+			expect(program.getSourceFile(shared)).toBeDefined();
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}
+);
+
+test('resolves wildcard ambient modules with TypeScript precedence', { timeout: 60000 }, () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kit-worker-wildcards-'));
+	const write = (/** @type {string} */ name, /** @type {string} */ content) => {
+		const file = path.join(root, name);
+		fs.mkdirSync(path.dirname(file), { recursive: true });
+		fs.writeFileSync(file, content);
+		return file;
+	};
+	try {
+		const config = validate_config({ kit: { experimental: { serviceWorkerFallbacks: true } } });
+		config.kit.files.routes = path.join(root, 'src/routes');
+		config.kit.outDir = path.join(root, '.svelte-kit');
+		write('package.json', JSON.stringify({ type: 'module' }));
+		write(
+			'.svelte-kit/tsconfig.worker.json',
+			JSON.stringify({
+				compilerOptions: { module: 'NodeNext', moduleResolution: 'NodeNext', types: [] }
+			})
+		);
+		write(
+			'node_modules/worker-contract/package.json',
+			JSON.stringify({ name: 'worker-contract', type: 'module', types: 'index.d.ts' })
+		);
+		const contract = write(
+			'node_modules/worker-contract/index.d.ts',
+			`/// <reference lib="webworker" />
+			declare module '*.worker-data' { export interface Data { kind: 'broad'; } }
+			declare module '*' { export interface Data { kind: 'fallback'; } }
+			declare module 'special*.worker-data' { export interface Data { kind: 'specific'; } }
+			declare module 'same*.worker-data' { export interface Data { kind: 'first'; } }
+			declare module 'same*-named.worker-data' { export interface Data { kind: 'second'; } }
+			declare module 'special-exact.worker-data' { export interface Data { kind: 'exact'; } }
+			declare module 'abc*bc' { export interface Data { kind: 'overlap'; } }
+			declare module 'worker-contract' {
+				import type { Data as Broad } from 'schema.worker-data';
+				import type { Data as Specific } from 'special-schema.worker-data';
+				import type { Data as Exact } from 'special-exact.worker-data';
+				import type { Data as Physical } from 'physical.worker-data';
+				import type { Data as Tied } from 'same-named.worker-data';
+				import type { Data as Fallback } from 'abc';
+				export interface Payload {
+					broad: Broad; specific: Specific; exact: Exact;
+					physical: Physical; tied: Tied; fallback: Fallback;
+				}
+			}`
+		);
+		write(
+			'node_modules/physical.worker-data/package.json',
+			JSON.stringify({ name: 'physical.worker-data', type: 'module', types: 'index.d.ts' })
+		);
+		const physical = write(
+			'node_modules/physical.worker-data/index.d.ts',
+			`export interface Data { kind: 'physical'; }`
+		);
+		write('src/routes/+page.svelte', '<p>worker</p>');
+		const worker = write(
+			'src/routes/+page.worker.ts',
+			`import type { Payload } from 'worker-contract';
+			export const load = (): Payload => ({
+				broad: { kind: 'broad' }, specific: { kind: 'specific' }, exact: { kind: 'exact' },
+				physical: { kind: 'physical' }, tied: { kind: 'first' }, fallback: { kind: 'fallback' }
+			});`
+		);
+		/** @type {import('typescript').CompilerOptions} */
+		const options = {
+			module: ts.ModuleKind.NodeNext,
+			moduleResolution: ts.ModuleResolutionKind.NodeNext,
+			target: ts.ScriptTarget.ESNext,
+			types: [],
+			strict: true,
+			skipLibCheck: false,
+			noEmit: true
+		};
+		/** @param {import('typescript').Program} program */
+		const diagnostics = (program) =>
+			ts.getPreEmitDiagnostics(program).map((diagnostic) => ({
+				code: diagnostic.code,
+				message: ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')
+			}));
+		expect(
+			diagnostics(
+				ts.createProgram([worker], { ...options, lib: ['lib.esnext.d.ts', 'lib.webworker.d.ts'] })
+			)
+		).toEqual([]);
+		fs.mkdirSync(path.join(config.kit.outDir, 'types'), { recursive: true });
+		write_worker_declarations(config, create_manifest_data({ config, cwd: root }), root);
+		const relative = path
+			.relative(root, worker_declaration(config, worker, root))
+			.split(path.sep)
+			.join('/')
+			.replace(/\.d\.ts$/, '.js');
+		const app = write(
+			'app.ts',
+			`import type { load } from './${relative}';
+			declare const data: ReturnType<typeof load>;
+			const broad: 'broad' = data.broad.kind;
+			const specific: 'specific' = data.specific.kind;
+			const exact: 'exact' = data.exact.kind;
+			const physical: 'physical' = data.physical.kind;
+			const tied: 'first' = data.tied.kind;
+			const fallback: 'fallback' = data.fallback.kind;
+			// @ts-expect-error wildcard contracts must retain their specific types
+			const wrong: number = data.broad.kind;
+			// @ts-expect-error isolated declarations must not expose worker globals
+			importScripts('worker.js');`
+		);
+		const program = ts.createProgram([app], {
+			...options,
+			lib: ['lib.esnext.d.ts', 'lib.dom.d.ts']
+		});
+		expect(diagnostics(program)).toEqual([]);
+		for (const file of [worker, contract]) expect(program.getSourceFile(file)).toBeUndefined();
+		expect(program.getSourceFile(physical)).toBeDefined();
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test(
 	'preserves module augmentations of shared and isolated declarations',
 	{ timeout: 60000 },
 	() => {
