@@ -809,7 +809,12 @@ export function create_service_worker_resolver(manifest_data, options = {}) {
 				[request.signal, options.signal, controller.signal].filter((signal) => signal !== undefined)
 			);
 
-			return fetch(request, { signal }).finally(() => {
+			// Supplying an init object resets the FetchEvent request's referrer defaults.
+			return fetch(request, {
+				signal,
+				referrer: request.referrer,
+				referrerPolicy: request.referrerPolicy
+			}).finally(() => {
 				if (timeout !== null) clearTimeout(timeout);
 			});
 		}

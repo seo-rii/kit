@@ -1540,6 +1540,58 @@ test('rejects worker modules that mix default and named actions', async () => {
 });
 
 for (const method of ['GET', 'POST']) {
+	for (const option of ['none', 'timeout', 'signal']) {
+		test.each([
+			{ referrer: 'https://example.com/page', referrerPolicy: 'strict-origin-when-cross-origin' },
+			{ referrer: '', referrerPolicy: 'no-referrer' }
+		])(
+			`preserves ${method} server retry referrers with a ${option} option: $referrerPolicy`,
+			async ({ referrer, referrerPolicy }) => {
+				const request = new Request(create_worker_request(method), {
+					referrer,
+					referrerPolicy: /** @type {ReferrerPolicy} */ (referrerPolicy)
+				});
+				/** @type {Array<{ referrer: string; referrerPolicy: string; method: string; body: string }>} */
+				const forwarded = [];
+				const fetch = vi.fn(async (request, init) => {
+					const outgoing = init ? new Request(request, init) : request;
+					forwarded.push({
+						referrer: outgoing.referrer,
+						referrerPolicy: outgoing.referrerPolicy,
+						method: outgoing.method,
+						body: await outgoing.text()
+					});
+					return new Response('network');
+				});
+				const handler = async (/** @type {import('@sveltejs/kit').WorkerLoadEvent} */ event) => {
+					if (method === 'POST') await event.request.formData();
+					await event.server(
+						option === 'timeout'
+							? { timeout: 60000 }
+							: option === 'signal'
+								? { signal: new AbortController().signal }
+								: undefined
+					);
+					return { local: true };
+				};
+				const { resolve } = instantiate_resolver(create_manifest(), {
+					fetch,
+					workers: {
+						'/src/routes/target/+page.worker.js': {
+							load: handler,
+							actions: { default: handler }
+						}
+					}
+				});
+
+				await resolve(request, { strategy: 'worker-first' });
+				expect(forwarded).toEqual([
+					{ referrer, referrerPolicy, method, body: method === 'POST' ? 'value=test' : '' }
+				]);
+			}
+		);
+	}
+
 	for (const cancellation of ['before retry', 'during retry']) {
 		test.each(['timeout', 'signal'])(
 			`preserves ${method} request cancellation ${cancellation} with a server %s option`,
