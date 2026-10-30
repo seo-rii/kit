@@ -23,10 +23,13 @@ export interface RemoteCache {
 	/**
 	 * Fetch once, falling back to a fresh cached remote GET only after a transport failure.
 	 * A response opts in with a positive `Cache-Control: max-age`; `no-store`, `no-cache`,
-	 * `Vary: *`, `Vary: Cookie`, HTTP errors, and event streams are never cached. Existing
-	 * Cookie variants are also rejected because browser cookies are hidden from request
-	 * headers. `Age` and `Date` count toward expiry. Cached payloads remain opaque and are
-	 * never deserialized.
+	 * `Vary: *`, HTTP errors, and event streams are never cached. Variants on browser-controlled
+	 * request headers (including Cookie, Referer, Origin, Accept-Encoding, User-Agent, Sec-*,
+	 * and Proxy-*) are also rejected and removed from existing caches because their network
+	 * values cannot be matched reliably. This includes responses whose compression middleware
+	 * adds `Vary: Accept-Encoding`. Visible headers such as Accept-Language, Authorization,
+	 * and application headers remain supported. `Age` and `Date` count toward expiry.
+	 * Cached payloads remain opaque and are never deserialized.
 	 * Remote GET network attempts use `cache: 'no-store'` so the browser HTTP cache
 	 * cannot serve an old value after this coordinator invalidates CacheStorage.
 	 *

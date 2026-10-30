@@ -400,6 +400,55 @@ describe('explicit cache opt-in', () => {
 	);
 
 	test.each([
+		'Sec-Fetch-Mode',
+		'Accept-Language, sEc-Ch-Ua',
+		'Proxy-Authorization',
+		'Referer',
+		'Origin',
+		'Accept-Encoding',
+		'User-Agent'
+	])('revokes caching for browser-controlled Vary: %s', async (vary) => {
+		const { storage, operations } = memory_storage();
+		const response = cacheable('browser-dependent value', { vary });
+		const clone = vi.spyOn(response, 'clone');
+		const fetch = vi
+			.fn()
+			.mockResolvedValueOnce(cacheable('previous value'))
+			.mockResolvedValueOnce(response)
+			.mockRejectedValue(offline_error);
+		const { handle } = create(fetch, storage);
+		const request = new Request(query_url);
+		await handle(request);
+		expect(await handle(request)).toBe(response);
+		await expect(handle(request)).rejects.toBe(offline_error);
+		expect(clone).not.toHaveBeenCalled();
+		expect(operations.filter((operation) => operation === 'put')).toHaveLength(1);
+		expect(operations).toContain('delete');
+	});
+
+	test.each(['Sec-Fetch-Mode', 'Referer'])(
+		'a browser-controlled Vary: %s response fences an older pending read',
+		async (vary) => {
+			const { storage, operations } = memory_storage();
+			const pending = deferred();
+			const response = cacheable('browser-dependent value', { vary });
+			const fetch = vi
+				.fn()
+				.mockReturnValueOnce(pending.promise)
+				.mockResolvedValueOnce(response)
+				.mockRejectedValue(offline_error);
+			const { handle } = create(fetch, storage);
+			const request = new Request(query_url);
+			const old_read = handle(request);
+			expect(await handle(request)).toBe(response);
+			pending.resolve(cacheable('older value'));
+			expect(await (await old_read).text()).toBe('older value');
+			await expect(handle(request)).rejects.toBe(offline_error);
+			expect(operations).not.toContain('put');
+		}
+	);
+
+	test.each([
 		'private, x-policy="start, max-age=60, end"',
 		String.raw`private, x-policy="escaped \", max-age=60, end"`,
 		'max-age=60, x-policy="unterminated',
@@ -454,20 +503,23 @@ describe('explicit cache opt-in', () => {
 		expect(entries?.has(query_url)).toBe(false);
 	});
 
-	test('refuses and deletes a Vary: Cookie entry stored by an earlier coordinator', async () => {
-		const { storage, namespaces } = memory_storage();
-		const fetch = vi.fn().mockResolvedValueOnce(cacheable()).mockRejectedValue(offline_error);
-		const request = new Request(query_url);
-		await create(fetch, storage).handle(request);
-		const entries = namespaces.values().next().value;
-		const entry = entries?.get(query_url);
-		if (!entry) throw new Error('Expected a persisted remote response');
-		// Preserve valid freshness metadata while reproducing the previous cache policy.
-		entry.response.headers.set('vary', 'Cookie');
+	test.each(['Cookie', 'Sec-Fetch-Mode', 'Referer', 'Origin', 'User-Agent'])(
+		'refuses and deletes a Vary: %s entry stored by an earlier coordinator',
+		async (vary) => {
+			const { storage, namespaces } = memory_storage();
+			const fetch = vi.fn().mockResolvedValueOnce(cacheable()).mockRejectedValue(offline_error);
+			const request = new Request(query_url);
+			await create(fetch, storage).handle(request);
+			const entries = namespaces.values().next().value;
+			const entry = entries?.get(query_url);
+			if (!entry) throw new Error('Expected a persisted remote response');
+			// Preserve valid freshness metadata while reproducing the previous cache policy.
+			entry.response.headers.set('vary', vary);
 
-		await expect(create(fetch, storage).handle(request)).rejects.toBe(offline_error);
-		expect(entries?.has(query_url)).toBe(false);
-	});
+			await expect(create(fetch, storage).handle(request)).rejects.toBe(offline_error);
+			expect(entries?.has(query_url)).toBe(false);
+		}
+	);
 
 	test('still matches supported Vary headers, including names containing Cookie', async () => {
 		const { storage } = memory_storage();
@@ -492,6 +544,27 @@ describe('explicit cache opt-in', () => {
 				new Request(query_url, { headers: { 'accept-language': 'ko', 'x-cookie-pref': 'one' } })
 			)
 		).rejects.toBe(offline_error);
+		expect(await (await handle(request)).text()).toBe('matching variant');
+	});
+
+	test.each([
+		['Accept', 'application/json', 'text/plain'],
+		['Authorization', 'Bearer one', 'Bearer two'],
+		['X-Query-View', 'one', 'two'],
+		['X-Sec-Mode', 'one', 'two'],
+		['Origin-Pref', 'one', 'two']
+	])('still caches and matches visible Vary: %s headers', async (vary, first, second) => {
+		const { storage } = memory_storage();
+		const fetch = vi
+			.fn()
+			.mockResolvedValueOnce(cacheable('matching variant', { vary }))
+			.mockRejectedValue(offline_error);
+		const { handle } = create(fetch, storage);
+		const request = new Request(query_url, { headers: { [vary]: first } });
+		await handle(request);
+		await expect(handle(new Request(query_url, { headers: { [vary]: second } }))).rejects.toBe(
+			offline_error
+		);
 		expect(await (await handle(request)).text()).toBe('matching variant');
 	});
 

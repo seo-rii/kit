@@ -3,6 +3,34 @@
 const stored_at_header = 'x-sveltekit-offline-stored-at';
 const initial_age_header = 'x-sveltekit-offline-initial-age';
 
+// These browser-controlled fields cannot be reproduced by the cache Request's headers.
+// https://fetch.spec.whatwg.org/#forbidden-request-header
+const unmatchable_vary_headers = new Set([
+	'accept-charset',
+	'accept-encoding',
+	'access-control-request-headers',
+	'access-control-request-method',
+	'connection',
+	'content-length',
+	'cookie',
+	'cookie2',
+	'date',
+	'dnt',
+	'expect',
+	'host',
+	'keep-alive',
+	'origin',
+	'referer',
+	'set-cookie',
+	'te',
+	'trailer',
+	'transfer-encoding',
+	'upgrade',
+	'via',
+	// Chromium also strips this field when reconstructing a Request.
+	'user-agent'
+]);
+
 /**
  * Cache explicitly opted-in remote reads without interpreting SvelteKit's payload format.
  *
@@ -210,14 +238,19 @@ function get_freshness(response, received_at, age) {
 	) {
 		return null;
 	}
-	// Browsers attach cookies outside the request headers visible to service workers.
+	// Browsers can inject or strip these fields outside the headers stored in CacheStorage.
 	if (
 		response.headers
 			.get('vary')
 			?.split(',')
 			.some((value) => {
 				const header = value.trim().toLowerCase();
-				return header === '*' || header === 'cookie';
+				return (
+					header === '*' ||
+					unmatchable_vary_headers.has(header) ||
+					header.startsWith('sec-') ||
+					header.startsWith('proxy-')
+				);
 			})
 	)
 		return null;
