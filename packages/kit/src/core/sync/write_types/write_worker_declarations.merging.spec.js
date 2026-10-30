@@ -7,6 +7,113 @@ import create_manifest_data from '../create_manifest_data/index.js';
 import { ts } from '../ts.js';
 import { worker_declaration, write_worker_declarations } from './write_worker_declarations.js';
 
+test('retains shared references across ambient module fragments', { timeout: 60000 }, () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kit-worker-ambient-references-'));
+	const write = (/** @type {string} */ name, /** @type {string} */ content) => {
+		const file = path.join(root, name);
+		fs.mkdirSync(path.dirname(file), { recursive: true });
+		fs.writeFileSync(file, content);
+		return file;
+	};
+	try {
+		const config = validate_config({ kit: { experimental: { serviceWorkerFallbacks: true } } });
+		config.kit.files.routes = path.join(root, 'src/routes');
+		config.kit.outDir = path.join(root, '.svelte-kit');
+		write('package.json', JSON.stringify({ type: 'module' }));
+		write(
+			'.svelte-kit/tsconfig.worker.json',
+			JSON.stringify({
+				compilerOptions: { module: 'NodeNext', moduleResolution: 'NodeNext', types: [] }
+			})
+		);
+		write(
+			'node_modules/worker-contract/package.json',
+			JSON.stringify({ name: 'worker-contract', type: 'module', types: 'index.d.ts' })
+		);
+		const first = write(
+			'node_modules/worker-contract/index.d.ts',
+			`/// <reference lib="webworker" />
+			/// <reference path="./globals.d.ts" />
+			/// <reference path="./extra/index.d.ts" />
+			declare module 'worker-contract' { export interface Payload { path: PathPayload; } }`
+		);
+		const second = write(
+			'node_modules/worker-contract/extra/index.d.ts',
+			`/// <reference types="shared-globals" />
+			declare module 'worker-contract' { export interface Payload { types: TypePayload; } }`
+		);
+		const path_reference = write(
+			'node_modules/worker-contract/globals.d.ts',
+			`interface PathPayload { kind: 'path'; }`
+		);
+		write(
+			'node_modules/worker-contract/extra/node_modules/@types/shared-globals/package.json',
+			JSON.stringify({ name: '@types/shared-globals', types: 'index.d.ts' })
+		);
+		const type_reference = write(
+			'node_modules/worker-contract/extra/node_modules/@types/shared-globals/index.d.ts',
+			`interface TypePayload { kind: 'types'; }`
+		);
+		write('src/routes/+page.svelte', '<p>worker</p>');
+		const worker = write(
+			'src/routes/+page.worker.ts',
+			`import type { Payload } from 'worker-contract';
+			export const load = (): Payload => ({ path: { kind: 'path' }, types: { kind: 'types' } });`
+		);
+		/** @type {import('typescript').CompilerOptions} */
+		const options = {
+			module: ts.ModuleKind.NodeNext,
+			moduleResolution: ts.ModuleResolutionKind.NodeNext,
+			target: ts.ScriptTarget.ESNext,
+			types: [],
+			strict: true,
+			skipLibCheck: false,
+			noEmit: true
+		};
+		/** @param {import('typescript').Program} program */
+		const diagnostics = (program) =>
+			ts.getPreEmitDiagnostics(program).map((diagnostic) => ({
+				code: diagnostic.code,
+				message: ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')
+			}));
+		expect(
+			diagnostics(
+				ts.createProgram([worker], { ...options, lib: ['lib.esnext.d.ts', 'lib.webworker.d.ts'] })
+			)
+		).toEqual([]);
+		fs.mkdirSync(path.join(config.kit.outDir, 'types'), { recursive: true });
+		write_worker_declarations(config, create_manifest_data({ config, cwd: root }), root);
+		const relative = path
+			.relative(root, worker_declaration(config, worker, root))
+			.split(path.sep)
+			.join('/')
+			.replace(/\.d\.ts$/, '.js');
+		const app = write(
+			'app.ts',
+			`import type { load } from './${relative}';
+			declare const data: ReturnType<typeof load>;
+			const path: 'path' = data.path.kind;
+			const types: 'types' = data.types.kind;
+			// @ts-expect-error referenced declarations must retain their specific types
+			const wrong_path: number = data.path.kind;
+			// @ts-expect-error references from later fragments must also be retained
+			const wrong_types: number = data.types.kind;
+			// @ts-expect-error isolated declarations must not expose worker globals
+			importScripts('worker.js');`
+		);
+		const program = ts.createProgram([app], {
+			...options,
+			lib: ['lib.esnext.d.ts', 'lib.dom.d.ts']
+		});
+		expect(diagnostics(program)).toEqual([]);
+		for (const file of [worker, first, second]) expect(program.getSourceFile(file)).toBeUndefined();
+		for (const file of [path_reference, type_reference])
+			expect(program.getSourceFile(file)).toBeDefined();
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test(
 	'keeps wildcard augmentations separate while preserving shared brands',
 	{ timeout: 60000 },

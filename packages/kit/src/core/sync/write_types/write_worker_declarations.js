@@ -427,7 +427,7 @@ export function write_worker_declarations(config, manifest, root) {
 	for (const file of declarations.keys()) {
 		if (!isolated.has(file)) declarations.delete(file);
 	}
-	/** @type {Map<string, Array<{ file: string; text: string }>>} */
+	/** @type {Map<string, Array<{ file: string; text: string; references: string }>>} */
 	const ambient_parts = new Map();
 	/** @type {Map<string, string>} */
 	const ambient_declarations = new Map();
@@ -457,6 +457,27 @@ export function write_worker_declarations(config, manifest, root) {
 						(statement) => !ts.isModuleDeclaration(statement) || !ts.isStringLiteral(statement.name)
 					)
 					.map((statement) => statement.getText(source));
+				/** @param {import('typescript').FileReference} reference @param {string | undefined} dependency */
+				const reference_directive = (reference, dependency) => {
+					const resolved = dependency && path.resolve(dependency);
+					const referenced = resolved && sources.get(resolved);
+					// Isolated ambient scripts are already materialized as file modules.
+					// Referencing their original files would reopen the worker-only graph.
+					if (resolved && referenced && isolated.has(resolved) && !ts.isExternalModule(referenced))
+						return '';
+					const start = source.text.lastIndexOf('///', reference.pos);
+					return source.text.slice(start, source.text.indexOf('>', reference.end) + 1);
+				};
+				const reference_text = [
+					...source.referencedFiles.map((reference) =>
+						reference_directive(reference, path.resolve(path.dirname(file), reference.fileName))
+					),
+					...source.typeReferenceDirectives.map((reference) =>
+						reference_directive(reference, resolve_type_reference(reference, file))
+					)
+				]
+					.filter(Boolean)
+					.join('\n');
 				for (const module of modules) {
 					if (!module.body || !ts.isModuleBlock(module.body)) {
 						throw new Error(
@@ -580,6 +601,7 @@ export function write_worker_declarations(config, manifest, root) {
 					const first_part = !parts.some((part) => part.file === file);
 					parts.push({
 						file,
+						references: first_part ? reference_text : '',
 						text: pattern
 							? [
 									`declare module ${JSON.stringify(prefix + name)} {`,
@@ -723,9 +745,18 @@ export function write_worker_declarations(config, manifest, root) {
 	const outputs = new Set();
 	for (const [file, text] of declarations) {
 		const target = /** @type {string} */ (destinations.get(file));
-		const parts = ambient_parts.get(file) ?? [{ file, text }];
+		const parts = ambient_parts.get(file) ?? [{ file, text, references: '' }];
+		// TypeScript only reads reference directives before the first statement.
+		// Keep references from every fragment at the start of the combined module.
+		const headers = new Set(
+			parts
+				.filter((part) => part.references)
+				.map((part) => rewrite_declaration(part.file, part.references, target))
+		);
 		const rewritten = parts.map((part) => rewrite_declaration(part.file, part.text, target));
-		const content = [...(pattern_references.get(target) ?? []), ...rewritten].join('\n');
+		const content = [...(pattern_references.get(target) ?? []), ...headers, ...rewritten].join(
+			'\n'
+		);
 		if (!fs.existsSync(target) || fs.readFileSync(target, 'utf8') !== content)
 			write(target, content);
 		outputs.add(path.basename(target));
