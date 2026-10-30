@@ -5,6 +5,7 @@ import { s } from '../../utils/misc.js';
 
 const DATA_SUFFIX = '/__data.json';
 const HTML_DATA_SUFFIX = '.html__data.json';
+const devalue_path = posixify(fileURLToPath(import.meta.resolve('devalue')));
 const routing = posixify(fileURLToPath(new URL('../../utils/routing.js', import.meta.url)));
 const url_utils = posixify(fileURLToPath(new URL('../../utils/url.js', import.meta.url)));
 
@@ -80,7 +81,9 @@ export function create_service_worker_resolver(manifest_data, options = {}) {
 		`;
 	});
 
-	const devalue_import = routes.length > 0 ? "import * as devalue from 'devalue';" : '';
+	// Virtual modules resolve bare imports from the app, where Kit's dependencies
+	// may not be exposed by the package manager.
+	const devalue_import = routes.length > 0 ? `import * as devalue from ${s(devalue_path)};` : '';
 
 	return dedent`
 		${devalue_import}

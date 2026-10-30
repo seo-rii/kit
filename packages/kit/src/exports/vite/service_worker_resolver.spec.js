@@ -106,7 +106,7 @@ function instantiate_resolver(
 		base,
 		version: 'test-version'
 	})
-		.replace("import * as devalue from 'devalue';", '')
+		.replace(/^import \* as devalue from "[^"]+";$/m, '')
 		.replace(/^import \{ exec \} from "[^"]+";$/m, '')
 		.replace(/^import \{ normalize_path \} from "[^"]+";$/m, '')
 		.replace(
